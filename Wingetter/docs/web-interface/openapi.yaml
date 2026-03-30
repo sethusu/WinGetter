@@ -1,0 +1,532 @@
+openapi: 3.1.0
+info:
+  title: Wingetter Web Packaging API
+  version: 0.1.0
+  summary: Async API for building IntuneWin packages from Winget apps.
+  description: |
+    This API wraps the existing `Create-IntuneWinFromWinget.ps1` workflow into a job-based
+    web interface. Jobs run on a Windows worker that has `winget` and `intunewinapputil`.
+
+servers:
+  - url: https://wingetter.example.com
+    description: Production
+  - url: http://localhost:8080
+    description: Local development
+
+tags:
+  - name: Jobs
+  - name: Artifacts
+  - name: Uploads
+  - name: Health
+
+paths:
+  /api/v1/health:
+    get:
+      tags: [Health]
+      summary: Check API and worker prerequisites
+      operationId: getHealth
+      responses:
+        '200':
+          description: API is reachable
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HealthResponse'
+
+  /api/v1/uploads/icon:
+    post:
+      tags: [Uploads]
+      summary: Upload optional icon file for a job
+      operationId: uploadIcon
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file:
+                  type: string
+                  format: binary
+      responses:
+        '201':
+          description: Icon uploaded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IconUploadResponse'
+        '400':
+          $ref: '#/components/responses/ApiError'
+
+  /api/v1/jobs:
+    post:
+      tags: [Jobs]
+      summary: Create a new packaging job
+      operationId: createJob
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateJobRequest'
+      responses:
+        '202':
+          description: Job accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CreateJobResponse'
+        '400':
+          $ref: '#/components/responses/ApiError'
+    get:
+      tags: [Jobs]
+      summary: List recent jobs
+      operationId: listJobs
+      parameters:
+        - in: query
+          name: status
+          schema:
+            $ref: '#/components/schemas/JobStatus'
+        - in: query
+          name: limit
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+            default: 50
+      responses:
+        '200':
+          description: Job list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/JobSummary'
+
+  /api/v1/jobs/{jobId}:
+    get:
+      tags: [Jobs]
+      summary: Get a single job
+      operationId: getJob
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: Job status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobDetail'
+        '404':
+          $ref: '#/components/responses/ApiError'
+
+  /api/v1/jobs/{jobId}/events:
+    get:
+      tags: [Jobs]
+      summary: Stream server-sent events for a job
+      operationId: streamJobEvents
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: SSE stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                example: |
+                  event: step_started
+                  data: {"jobId":"job_123","step":"downloading_installer"}
+        '404':
+          $ref: '#/components/responses/ApiError'
+
+  /api/v1/jobs/{jobId}/selection:
+    post:
+      tags: [Jobs]
+      summary: Select package when multiple Winget matches are found
+      operationId: submitJobSelection
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [packageId]
+              properties:
+                packageId:
+                  type: string
+                  example: JetBrains.WebStorm
+      responses:
+        '200':
+          description: Selection accepted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JobDetail'
+        '409':
+          $ref: '#/components/responses/ApiError'
+
+  /api/v1/jobs/{jobId}/cancel:
+    post:
+      tags: [Jobs]
+      summary: Cancel an active job
+      operationId: cancelJob
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '202':
+          description: Cancellation requested
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [jobId, status]
+                properties:
+                  jobId:
+                    type: string
+                  status:
+                    $ref: '#/components/schemas/JobStatus'
+        '404':
+          $ref: '#/components/responses/ApiError'
+
+  /api/v1/jobs/{jobId}/artifacts:
+    get:
+      tags: [Artifacts]
+      summary: List artifacts generated by a job
+      operationId: listArtifacts
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+      responses:
+        '200':
+          description: Artifact list
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Artifact'
+        '404':
+          $ref: '#/components/responses/ApiError'
+
+  /api/v1/jobs/{jobId}/artifacts/{artifactName}:
+    get:
+      tags: [Artifacts]
+      summary: Download a single artifact
+      operationId: downloadArtifact
+      parameters:
+        - $ref: '#/components/parameters/JobId'
+        - in: path
+          name: artifactName
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: File stream
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        '404':
+          $ref: '#/components/responses/ApiError'
+
+components:
+  parameters:
+    JobId:
+      in: path
+      name: jobId
+      required: true
+      schema:
+        type: string
+      example: job_01jmkzq3b8xq3ma1d1rkr6mb2j
+
+  responses:
+    ApiError:
+      description: Error response
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ApiError'
+
+  schemas:
+    HealthResponse:
+      type: object
+      required: [status, dependencies]
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded]
+        dependencies:
+          type: object
+          required: [winget, intunewinapputil, powershell]
+          properties:
+            winget:
+              $ref: '#/components/schemas/DependencyStatus'
+            intunewinapputil:
+              $ref: '#/components/schemas/DependencyStatus'
+            powershell:
+              $ref: '#/components/schemas/DependencyStatus'
+
+    DependencyStatus:
+      type: object
+      required: [available]
+      properties:
+        available:
+          type: boolean
+        version:
+          type: string
+          nullable: true
+        message:
+          type: string
+          nullable: true
+
+    IconUploadResponse:
+      type: object
+      required: [iconUploadId]
+      properties:
+        iconUploadId:
+          type: string
+          example: icon_01jmkzv7v3a9z6d2k4m4qf1x9p
+
+    CreateJobRequest:
+      type: object
+      required: [appName, outputMode]
+      properties:
+        appName:
+          type: string
+          description: Winget package ID or search term.
+          example: JetBrains.WebStorm
+        version:
+          type: string
+          nullable: true
+          example: 2025.3.1.1
+        iconUploadId:
+          type: string
+          nullable: true
+        outputMode:
+          type: string
+          enum: [download, server_path]
+        serverPath:
+          type: string
+          nullable: true
+          description: Required only when outputMode=server_path.
+        selectionMode:
+          type: string
+          enum: [exact_first, require_user_selection]
+          default: require_user_selection
+      allOf:
+        - if:
+            properties:
+              outputMode:
+                const: server_path
+          then:
+            required: [serverPath]
+
+    CreateJobResponse:
+      type: object
+      required: [jobId, status, createdAt]
+      properties:
+        jobId:
+          type: string
+        status:
+          $ref: '#/components/schemas/JobStatus'
+        createdAt:
+          type: string
+          format: date-time
+
+    JobSummary:
+      type: object
+      required: [jobId, status, createdAt, appName]
+      properties:
+        jobId:
+          type: string
+        appName:
+          type: string
+        status:
+          $ref: '#/components/schemas/JobStatus'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+          nullable: true
+
+    JobDetail:
+      type: object
+      required:
+        - jobId
+        - appName
+        - status
+        - currentStep
+        - progressPercent
+        - createdAt
+      properties:
+        jobId:
+          type: string
+        appName:
+          type: string
+        selectedPackage:
+          $ref: '#/components/schemas/SelectedPackage'
+        versionRequested:
+          type: string
+          nullable: true
+        versionResolved:
+          type: string
+          nullable: true
+        status:
+          $ref: '#/components/schemas/JobStatus'
+        currentStep:
+          $ref: '#/components/schemas/JobStep'
+        progressPercent:
+          type: integer
+          minimum: 0
+          maximum: 100
+        outputMode:
+          type: string
+          enum: [download, server_path]
+        outputPath:
+          type: string
+          nullable: true
+        packageRootPath:
+          type: string
+          nullable: true
+        eventsUrl:
+          type: string
+          nullable: true
+        artifactsUrl:
+          type: string
+          nullable: true
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        completedAt:
+          type: string
+          format: date-time
+          nullable: true
+        error:
+          $ref: '#/components/schemas/ApiError'
+          nullable: true
+        selectionCandidates:
+          type: array
+          items:
+            $ref: '#/components/schemas/PackageCandidate'
+
+    SelectedPackage:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          example: JetBrains.WebStorm
+        name:
+          type: string
+          example: WebStorm
+        publisher:
+          type: string
+          nullable: true
+
+    PackageCandidate:
+      type: object
+      required: [id, name, version]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        version:
+          type: string
+
+    Artifact:
+      type: object
+      required: [name, kind, sizeBytes, sha256, downloadUrl]
+      properties:
+        name:
+          type: string
+          example: WebStorm-2025.3.1.1.intunewin
+        kind:
+          type: string
+          enum:
+            - installer
+            - intunewin
+            - detection_script
+            - uninstall_script
+            - app_json
+            - win32_json
+            - readme
+            - icon
+            - bundle_zip
+        sizeBytes:
+          type: integer
+          minimum: 0
+        sha256:
+          type: string
+        downloadUrl:
+          type: string
+
+    JobStatus:
+      type: string
+      enum:
+        - queued
+        - running
+        - awaiting_selection
+        - completed
+        - failed
+        - cancelled
+
+    JobStep:
+      type: string
+      enum:
+        - queued
+        - searching_winget
+        - resolving_metadata
+        - creating_workspace
+        - downloading_installer
+        - calculating_hash
+        - generating_scripts
+        - generating_metadata_json
+        - packaging_intunewin
+        - finalizing_artifacts
+        - awaiting_selection
+        - completed
+        - failed
+        - cancelled
+
+    ApiError:
+      type: object
+      required: [code, message, retryable]
+      properties:
+        code:
+          type: string
+          enum:
+            - WINGET_NOT_FOUND
+            - WINGET_SEARCH_FAILED
+            - PACKAGE_SELECTION_REQUIRED
+            - INSTALLER_DOWNLOAD_FAILED
+            - INTUNEWIN_TOOL_NOT_FOUND
+            - INTUNEWIN_PACKAGE_FAILED
+            - INVALID_SERVER_PATH
+            - UNAUTHORIZED_PATH
+            - INTERNAL_ERROR
+        message:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+        retryable:
+          type: boolean
