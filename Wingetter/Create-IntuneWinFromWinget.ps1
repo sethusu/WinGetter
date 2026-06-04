@@ -41,6 +41,83 @@ param(
 # Error handling
 $ErrorActionPreference = "Stop"
 
+# Diagnostic logging
+$script:DiagnosticLogDirectory = Join-Path ([System.IO.Path]::GetTempPath()) "Wingetter"
+$script:DiagnosticLogPath = Join-Path $script:DiagnosticLogDirectory ("wingetter-{0}.log" -f (Get-Date -Format "yyyyMMdd-HHmmss"))
+$script:SearchOutputPath = Join-Path $script:DiagnosticLogDirectory ("winget-search-{0}.log" -f (Get-Date -Format "yyyyMMdd-HHmmss"))
+
+function Initialize-DiagnosticLogging {
+    try {
+        if (-not (Test-Path $script:DiagnosticLogDirectory)) {
+            New-Item -ItemType Directory -Path $script:DiagnosticLogDirectory -Force | Out-Null
+        }
+
+        $header = @(
+            "Wingetter diagnostic log"
+            "Started: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+            "Computer: $env:COMPUTERNAME"
+            "User: $env:USERNAME"
+            "Script: $PSCommandPath"
+            "AppName parameter: $AppName"
+            "Version parameter: $Version"
+            "OutputPath parameter: $OutputPath"
+            "----------------------------------------"
+        )
+        $header | Set-Content -Path $script:DiagnosticLogPath -Encoding UTF8
+    } catch {
+        # Do not block packaging if logging setup fails.
+    }
+}
+
+function Write-DiagnosticLog {
+    param(
+        [string]$Message,
+        [string]$Level = "INFO"
+    )
+
+    try {
+        $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss.fff"
+        Add-Content -Path $script:DiagnosticLogPath -Value "[$timestamp] [$Level] $Message"
+    } catch {
+        # Best effort only.
+    }
+}
+
+function Save-SearchOutputDiagnostics {
+    param(
+        [Parameter(Mandatory=$true)]
+        $SearchOutput
+    )
+
+    try {
+        $lines = if ($SearchOutput -is [string]) {
+            $SearchOutput -split "`n" | ForEach-Object { $_.TrimEnd("`r") }
+        } else {
+            @($SearchOutput)
+        }
+
+        $diagnosticLines = @()
+        $diagnosticLines += "Winget raw search output snapshot"
+        $diagnosticLines += "Captured: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+        $diagnosticLines += "Line count: $($lines.Count)"
+        $diagnosticLines += "----------------------------------------"
+
+        for ($idx = 0; $idx -lt $lines.Count; $idx++) {
+            $line = [string]$lines[$idx]
+            $lineWithTabsVisible = $line -replace "`t", "<TAB>"
+            $diagnosticLines += ("{0:D4}: {1}" -f ($idx + 1), $lineWithTabsVisible)
+        }
+
+        $diagnosticLines | Set-Content -Path $script:SearchOutputPath -Encoding UTF8
+        Write-DiagnosticLog "Saved raw winget search output to $script:SearchOutputPath"
+    } catch {
+        Write-DiagnosticLog "Failed to save winget raw output snapshot: $($_.Exception.Message)" "WARN"
+    }
+}
+
+Initialize-DiagnosticLogging
+Write-DiagnosticLog "Diagnostic logging initialized. Log file: $script:DiagnosticLogPath"
+
 # Function to show input dialog for Winget ID
 function Get-WingetIdFromDialog {
     # Add VisualBasic assembly for InputBox
@@ -67,12 +144,16 @@ function Select-WingetPackage {
         $SearchOutput
     )
     
+    Write-DiagnosticLog "Select-WingetPackage started. Raw SearchOutput type: $($SearchOutput.GetType().FullName)"
+
     # Convert to array if it's a string
     if ($SearchOutput -is [string]) {
         $SearchOutput = $SearchOutput -split "`n" | ForEach-Object { $_.TrimEnd("`r") }
     } elseif ($SearchOutput -isnot [array]) {
         $SearchOutput = @($SearchOutput)
     }
+
+    Write-DiagnosticLog "Select-WingetPackage received $($SearchOutput.Count) search output lines"
 
     function Normalize-WingetPackageId {
         param([string]$Id)
@@ -101,11 +182,18 @@ function Select-WingetPackage {
         $idValue = Normalize-WingetPackageId -Id $Id
         $versionValue = if ($Version) { $Version.Trim() } else { "" }
 
-        if ($nameValue.Length -eq 0 -or
-            $idValue.Length -le 2 -or
-            $idValue -notmatch '\.' -or
-            $versionValue.Length -eq 0 -or
-            $versionValue -notmatch '^[0-9A-Za-z][0-9A-Za-z._-]*$') {
+        if ($nameValue.Length -eq 0) {
+            Write-DiagnosticLog "Rejected package row due to empty name. Raw values: Name='$Name' Id='$Id' Version='$Version'" "DEBUG"
+            return $false
+        }
+
+        if ($idValue.Length -le 2 -or $idValue -notmatch '\.') {
+            Write-DiagnosticLog "Rejected package row due to invalid package ID after normalization ('$idValue'). Raw values: Name='$Name' Id='$Id' Version='$Version'" "DEBUG"
+            return $false
+        }
+
+        if ($versionValue.Length -eq 0 -or $versionValue -notmatch '^[0-9A-Za-z][0-9A-Za-z._-]*$') {
+            Write-DiagnosticLog "Rejected package row due to invalid version ('$versionValue'). Raw values: Name='$Name' Id='$Id' Version='$Version'" "DEBUG"
             return $false
         }
 
@@ -116,6 +204,9 @@ function Select-WingetPackage {
                 Id = $idValue
                 Version = $versionValue
             }
+            Write-DiagnosticLog "Accepted package candidate: Name='$nameValue' Id='$idValue' Version='$versionValue'" "DEBUG"
+        } else {
+            Write-DiagnosticLog "Skipped duplicate package candidate: Name='$nameValue' Id='$idValue' Version='$versionValue'" "DEBUG"
         }
 
         return $true
@@ -136,6 +227,8 @@ function Select-WingetPackage {
     }
     
     if ($headerLineIndex -eq -1) {
+        Write-DiagnosticLog "Did not find standard table header 'Name Id Version'. Trying fallback parsers."
+
         # Try alternative header format
         for ($i = 0; $i -lt $SearchOutput.Count; $i++) {
             if ($SearchOutput[$i] -match "Found.*\[") {
@@ -157,23 +250,26 @@ function Select-WingetPackage {
                         Id = $id
                         Version = $version
                     }
+                    Write-DiagnosticLog "Parsed single-result format successfully: Name='$name' Id='$id' Version='$version'"
                     return $packages[0]
                 }
             }
         }
-        return $null
     }
     
     # Use header positions as fixed-width column boundaries when possible.
-    $headerLine = $SearchOutput[$headerLineIndex]
-    $idColumnStart = $headerLine.IndexOf("Id")
-    $versionColumnStart = $headerLine.IndexOf("Version")
-    $sourceColumnStart = $headerLine.IndexOf("Source")
+    $headerLine = if ($headerLineIndex -ge 0) { $SearchOutput[$headerLineIndex] } else { "" }
+    $idColumnStart = if ($headerLineIndex -ge 0) { $headerLine.IndexOf("Id") } else { -1 }
+    $versionColumnStart = if ($headerLineIndex -ge 0) { $headerLine.IndexOf("Version") } else { -1 }
+    $sourceColumnStart = if ($headerLineIndex -ge 0) { $headerLine.IndexOf("Source") } else { -1 }
     $canUseFixedColumns = $idColumnStart -gt 0 -and $versionColumnStart -gt $idColumnStart
+    $parseStartIndex = if ($headerLineIndex -ge 0) { $headerLineIndex + 1 } else { 0 }
+
+    Write-DiagnosticLog "Parser configuration: headerLineIndex=$headerLineIndex parseStartIndex=$parseStartIndex canUseFixedColumns=$canUseFixedColumns idColumnStart=$idColumnStart versionColumnStart=$versionColumnStart sourceColumnStart=$sourceColumnStart"
 
     # Parse table rows starting after the header
     $skipNextLine = $false
-    for ($i = $headerLineIndex + 1; $i -lt $SearchOutput.Count; $i++) {
+    for ($i = $parseStartIndex; $i -lt $SearchOutput.Count; $i++) {
         $line = $SearchOutput[$i]
         
         # Skip separator lines (dashes) - these come right after the header
@@ -236,6 +332,7 @@ function Select-WingetPackage {
             }
 
             if (Add-PackageIfValid -Name $nameValue -Id $idValue -Version $versionValue -PackageList ([ref]$packages)) {
+                Write-DiagnosticLog "Line $($i + 1) parsed by fixed-column strategy."
                 continue
             }
         }
@@ -243,6 +340,7 @@ function Select-WingetPackage {
         # Strategy 2: regex split with support for tabs and IDs containing rendered whitespace.
         if ($line -match "^\s*(.+?)(?:\s{2,}|\t+)([A-Za-z0-9][A-Za-z0-9.\-\s]*[A-Za-z0-9])(?:\s{2,}|\t+)([0-9][0-9A-Za-z._-]*[0-9A-Za-z]|[0-9]+)") {
             if (Add-PackageIfValid -Name $matches[1] -Id $matches[2] -Version $matches[3] -PackageList ([ref]$packages)) {
+                Write-DiagnosticLog "Line $($i + 1) parsed by regex strategy."
                 continue
             }
         }
@@ -250,19 +348,27 @@ function Select-WingetPackage {
         # Strategy 3: generic token fallback for tab- or space-delimited output.
         $parts = $line -split '(?:\s{2,}|\t+)', [System.StringSplitOptions]::RemoveEmptyEntries
         if ($parts.Count -ge 3) {
-            Add-PackageIfValid -Name $parts[0] -Id $parts[1] -Version $parts[2] -PackageList ([ref]$packages) | Out-Null
+            if (Add-PackageIfValid -Name $parts[0] -Id $parts[1] -Version $parts[2] -PackageList ([ref]$packages)) {
+                Write-DiagnosticLog "Line $($i + 1) parsed by token fallback strategy."
+            } else {
+                Write-DiagnosticLog "Line $($i + 1) was tokenized but rejected. Tokens: $($parts -join ' | ')" "DEBUG"
+            }
         }
     }
     
     # If no packages found, return null
     if ($packages.Count -eq 0) {
+        Write-DiagnosticLog "No packages parsed from search output. Refer to raw output snapshot at $script:SearchOutputPath" "WARN"
         return $null
     }
+
+    Write-DiagnosticLog "Parsed $($packages.Count) package candidates."
     
     # If only one package, return it
     if ($packages.Count -eq 1) {
         Write-Host "`nFound 1 matching package:" -ForegroundColor Green
         Write-Host "  1. $($packages[0].Name) ($($packages[0].Id)) - Version: $($packages[0].Version)" -ForegroundColor Cyan
+        Write-DiagnosticLog "Only one package candidate remained after parsing."
         return $packages[0]
     }
     
@@ -300,6 +406,7 @@ function Select-WingetPackage {
     
     $selectedPackage = $packages[$parsedNumber - 1]
     Write-Host "`nSelected: $($selectedPackage.Name) ($($selectedPackage.Id))" -ForegroundColor Green
+    Write-DiagnosticLog "User selected package index $parsedNumber: $($selectedPackage.Id)"
     
     return $selectedPackage
 }
@@ -307,24 +414,29 @@ function Select-WingetPackage {
 # Prompt for AppName if not provided
 if ([string]::IsNullOrWhiteSpace($AppName)) {
     Write-Host "Winget Package ID not provided. Opening input dialog..." -ForegroundColor Cyan
+    Write-DiagnosticLog "AppName was not provided. Prompting user with input dialog."
     $AppName = Get-WingetIdFromDialog
     Write-Host "Using Winget ID: $AppName" -ForegroundColor Green
+    Write-DiagnosticLog "User provided AppName from dialog: $AppName"
 }
 
 # Function to write colored output
 function Write-Step {
     param([string]$Message, [string]$Color = "Cyan")
     Write-Host "`n[$Message]" -ForegroundColor $Color
+    Write-DiagnosticLog "STEP: $Message"
 }
 
 function Write-Success {
     param([string]$Message)
     Write-Host "[SUCCESS] $Message" -ForegroundColor Green
+    Write-DiagnosticLog "SUCCESS: $Message"
 }
 
 function Write-Error {
     param([string]$Message)
     Write-Host "[ERROR] $Message" -ForegroundColor Red
+    Write-DiagnosticLog "ERROR: $Message" "ERROR"
 }
 
 # Function to extract icon from executable
@@ -706,20 +818,29 @@ function Start-WingetDownloadWithProgress {
 # Step 1: Search Winget for the application
 Write-Step "Step 1: Searching Winget for application"
 try {
+    Write-Host "Diagnostic log: $script:DiagnosticLogPath" -ForegroundColor DarkGray
+    Write-DiagnosticLog "Beginning Winget search for AppName='$AppName'"
+
     # Check if --accept-package-agreements is supported (newer Winget versions)
     $testCommand = winget search --help 2>&1 | Select-String -Pattern "accept-package-agreements" -Quiet
     $supportsPackageAgreements = $testCommand
+    Write-DiagnosticLog "Winget supports --accept-package-agreements: $supportsPackageAgreements"
     
     # Search for the application (without --exact to get multiple results)
     if ($supportsPackageAgreements) {
+        Write-DiagnosticLog "Running command: winget search $AppName --accept-source-agreements --accept-package-agreements"
         $searchResult = winget search $AppName --accept-source-agreements --accept-package-agreements 2>&1
     } else {
+        Write-DiagnosticLog "Running command: winget search $AppName --accept-source-agreements"
         $searchResult = winget search $AppName --accept-source-agreements 2>&1
     }
     $searchExitCode = $LASTEXITCODE
+    Write-DiagnosticLog "Winget search exit code: $searchExitCode"
+    Save-SearchOutputDiagnostics -SearchOutput $searchResult
     
     # Check if search was successful - sometimes winget returns non-zero but still has results
     $hasResults = $searchResult | Select-String -Pattern "Name\s+Id\s+Version|Found.*\[" -Quiet
+    Write-DiagnosticLog "Winget search has recognizable result markers: $hasResults"
     if ($searchExitCode -ne 0) {
         # Check if we got useful output despite the error code
         if (-not $hasResults) {
@@ -737,6 +858,8 @@ try {
     $selectedPackage = Select-WingetPackage -SearchOutput $searchResult
     
     if (-not $selectedPackage) {
+        Write-Host "Search output diagnostics: $script:SearchOutputPath" -ForegroundColor Yellow
+        Write-DiagnosticLog "Select-WingetPackage returned no result for AppName '$AppName'." "WARN"
         throw "No packages found or could not parse search results"
     }
     
@@ -754,19 +877,24 @@ try {
     # Get app details using the selected package ID
     if ($Version) {
         if ($supportsPackageAgreements) {
+            Write-DiagnosticLog "Running command: winget show $packageId --exact --version $Version --accept-source-agreements --accept-package-agreements"
             $appInfo = winget show $packageId --exact --version $Version --accept-source-agreements --accept-package-agreements 2>&1
         } else {
+            Write-DiagnosticLog "Running command: winget show $packageId --exact --version $Version --accept-source-agreements"
             $appInfo = winget show $packageId --exact --version $Version --accept-source-agreements 2>&1
         }
         $showExitCode = $LASTEXITCODE
     } else {
         if ($supportsPackageAgreements) {
+            Write-DiagnosticLog "Running command: winget show $packageId --exact --accept-source-agreements --accept-package-agreements"
             $appInfo = winget show $packageId --exact --accept-source-agreements --accept-package-agreements 2>&1
         } else {
+            Write-DiagnosticLog "Running command: winget show $packageId --exact --accept-source-agreements"
             $appInfo = winget show $packageId --exact --accept-source-agreements 2>&1
         }
         $showExitCode = $LASTEXITCODE
     }
+    Write-DiagnosticLog "Winget show exit code for '$packageId': $showExitCode"
     
     # Check if show command was successful - sometimes winget returns non-zero but still has info
     $hasAppInfo = $appInfo | Select-String -Pattern "Found.*\[|Version:\s+|Publisher:\s+" -Quiet
@@ -830,6 +958,8 @@ try {
     
 } catch {
     Write-Error "Failed to search Winget: $_"
+    Write-Host "Diagnostic log: $script:DiagnosticLogPath" -ForegroundColor Yellow
+    Write-Host "Search output snapshot: $script:SearchOutputPath" -ForegroundColor Yellow
     exit 1
 }
 
@@ -1388,6 +1518,7 @@ try {
 } catch {
     Write-Error "Failed to create IntuneWin package: $_"
     Write-Host "You can manually run: intunewinapputil -c `"$versionDirectory`" -s `"$installerFileName`" -o `"$outputDirectory`" -q" -ForegroundColor Yellow
+    Write-Host "Diagnostic log: $script:DiagnosticLogPath" -ForegroundColor Yellow
 }
 
 # Summary
@@ -1418,4 +1549,7 @@ Next Steps:
 1. Review the generated files in: $versionDirectory
 2. Test the detection script if needed
 3. Upload the .intunewin file to Intune
+4. If any step fails, review diagnostic logs:
+   - $script:DiagnosticLogPath
+   - $script:SearchOutputPath
 "@ -ForegroundColor Green
