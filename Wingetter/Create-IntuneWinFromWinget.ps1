@@ -354,6 +354,43 @@ function Select-WingetPackage {
                 Write-DiagnosticLog "Line $($i + 1) was tokenized but rejected. Tokens: $($parts -join ' | ')" "DEBUG"
             }
         }
+
+        # Strategy 4: whitespace-token heuristic for rows that collapse to single spaces
+        # or have IDs split like "Valve. Steam".
+        $rawTokens = $line.Trim() -split '\s+'
+        if ($rawTokens.Count -ge 3) {
+            for ($tokenIndex = 1; $tokenIndex -lt $rawTokens.Count - 1; $tokenIndex++) {
+                $idTokenCandidate = $rawTokens[$tokenIndex]
+                $idTokenLength = 1
+
+                # Rejoin split IDs rendered as "Valve." + "Steam"
+                if ($idTokenCandidate.EndsWith(".") -and $tokenIndex + 1 -lt $rawTokens.Count) {
+                    $idTokenCandidate = "$idTokenCandidate$($rawTokens[$tokenIndex + 1])"
+                    $idTokenLength = 2
+                }
+
+                $versionTokenIndex = $tokenIndex + $idTokenLength
+                if ($versionTokenIndex -ge $rawTokens.Count) {
+                    continue
+                }
+
+                $versionTokenCandidate = $rawTokens[$versionTokenIndex]
+                if ($versionTokenCandidate -notmatch '^[0-9][0-9A-Za-z._-]*$') {
+                    continue
+                }
+
+                $nameTokenCount = $tokenIndex
+                if ($nameTokenCount -le 0) {
+                    continue
+                }
+
+                $nameTokenCandidate = ($rawTokens[0..($nameTokenCount - 1)] -join ' ')
+                if (Add-PackageIfValid -Name $nameTokenCandidate -Id $idTokenCandidate -Version $versionTokenCandidate -PackageList ([ref]$packages)) {
+                    Write-DiagnosticLog "Line $($i + 1) parsed by whitespace-token heuristic strategy (tokenIndex=$tokenIndex idTokenLength=$idTokenLength)."
+                    break
+                }
+            }
+        }
     }
     
     # If no packages found, return null
@@ -857,6 +894,21 @@ try {
     # Parse search results and let user select
     $selectedPackage = Select-WingetPackage -SearchOutput $searchResult
     
+    if (-not $selectedPackage) {
+        # Fallback: if user input looks like a package ID, continue with exact ID flow
+        # even when table parsing fails.
+        if ($AppName -match '^[A-Za-z0-9][A-Za-z0-9.\-\s]*\.[A-Za-z0-9][A-Za-z0-9.\-\s]*$') {
+            $normalizedFallbackId = ($AppName.Trim() -replace '\s*\.\s*', '.') -replace '\s+', ''
+            $selectedPackage = [PSCustomObject]@{
+                Name = $AppName.Trim()
+                Id = $normalizedFallbackId
+                Version = if ($Version) { $Version } else { "Unknown" }
+            }
+            Write-DiagnosticLog "Parser returned no result, but AppName looked like package ID. Falling back to exact ID: $normalizedFallbackId" "WARN"
+            Write-Host "Parser fallback: using exact package ID '$normalizedFallbackId'" -ForegroundColor Yellow
+        }
+    }
+
     if (-not $selectedPackage) {
         Write-Host "Search output diagnostics: $script:SearchOutputPath" -ForegroundColor Yellow
         Write-DiagnosticLog "Select-WingetPackage returned no result for AppName '$AppName'." "WARN"
