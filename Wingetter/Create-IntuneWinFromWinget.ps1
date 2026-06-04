@@ -14,7 +14,7 @@
 .PARAMETER Version
     Optional. Specific version to download. If not specified, latest version will be used.
 .PARAMETER OutputPath
-    Optional. Base output path. Defaults to "D:\Intoon In Progress"
+    Optional. Base output path. Defaults to "D:\intoon in progress"
 .PARAMETER IconPath
     Optional. Path to icon file. If not provided, will attempt to use logo.png from parent directory.
 .EXAMPLE
@@ -32,7 +32,7 @@ param(
     [string]$Version,
     
     [Parameter(Mandatory=$false)]
-    [string]$OutputPath = "D:\Intoon In Progress",
+    [string]$OutputPath = "D:\intoon in progress",
     
     [Parameter(Mandatory=$false)]
     [string]$IconPath

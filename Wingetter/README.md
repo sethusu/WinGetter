@@ -66,8 +66,9 @@ A dialog box will appear prompting you to enter the Winget Package ID.
   
 - **Version** (Optional): Specific version to download. If not specified, latest version is used.
 
-- **OutputPath** (Optional): Base directory for output. Default: `"D:\Intoon In Progress"`
+- **OutputPath** (Optional): Base directory for output. Default: `"D:\intoon in progress"`
   - Packages will be created in: `{OutputPath}\{PackageId}\{Version}\`
+  - Sister tool **Appgetter** defaults to: `D:\intoon in progress\Appgetter`
 
 - **IconPath** (Optional): Path to icon file (PNG format recommended)
   - If not provided, script will look for `logo.png` in the parent directory
