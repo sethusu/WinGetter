@@ -877,7 +877,7 @@ try {
     
     # Check if search output appears to contain results. We intentionally use broad patterns
     # because winget output formatting can vary by locale, terminal width, and font.
-    $hasResults = $searchResult | Select-String -Pattern "Name\s+Id\s+Version|Found.*\[|[A-Za-z0-9][A-Za-z0-9.\- ]*\.[A-Za-z0-9][A-Za-z0-9.\- ]*(?:\s{2,}|\t+)\d[0-9A-Za-z._-]*" -Quiet
+    $hasResults = $searchResult | Select-String -Pattern "Name\s+Id\s+Version|Found.*\[|[A-Za-z][A-Za-z0-9-]*(?:\s*\.\s*[A-Za-z0-9][A-Za-z0-9-]*)+(?:\s{2,}|\t+)\d[0-9A-Za-z._-]*" -Quiet
     Write-DiagnosticLog "Winget search has recognizable result markers: $hasResults"
     if ($searchExitCode -ne 0) {
         # Do not fail early. Some environments return non-zero with usable output.
