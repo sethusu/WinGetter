@@ -137,6 +137,20 @@ function Get-WingetIdFromDialog {
     return $result.Trim()
 }
 
+function Normalize-WingetPackageId {
+    param([string]$Id)
+
+    if ([string]::IsNullOrWhiteSpace($Id)) {
+        return ""
+    }
+
+    # Winget output can render IDs with whitespace around dots (for example: "Valve. Steam").
+    $normalizedId = $Id.Trim()
+    $normalizedId = $normalizedId -replace '\s*\.\s*', '.'
+    $normalizedId = $normalizedId -replace '\s+', ''
+    return $normalizedId
+}
+
 # Function to parse winget search results and show selection dialog
 function Select-WingetPackage {
     param(
@@ -154,21 +168,6 @@ function Select-WingetPackage {
     }
 
     Write-DiagnosticLog "Select-WingetPackage received $($SearchOutput.Count) search output lines"
-
-    function Normalize-WingetPackageId {
-        param([string]$Id)
-
-        if ([string]::IsNullOrWhiteSpace($Id)) {
-            return ""
-        }
-
-        # Winget output can sometimes render IDs with whitespace around dots (for example: "Valve. Steam").
-        # Collapse these artifacts so IDs still parse correctly.
-        $normalizedId = $Id.Trim()
-        $normalizedId = $normalizedId -replace '\s*\.\s*', '.'
-        $normalizedId = $normalizedId -replace '\s+', ''
-        return $normalizedId
-    }
 
     function Add-PackageIfValid {
         param(
@@ -236,7 +235,7 @@ function Select-WingetPackage {
                 $line = $SearchOutput[$i]
                 if ($line -match "Found\s+(.+?)\s+\[(.+?)\]") {
                     $name = $matches[1].Trim()
-                    $id = $matches[2].Trim()
+                    $id = Normalize-WingetPackageId -Id $matches[2].Trim()
                     # Try to find version in subsequent lines
                     $version = "Unknown"
                     for ($j = $i + 1; $j -lt [Math]::Min($i + 10, $SearchOutput.Count); $j++) {
@@ -245,13 +244,15 @@ function Select-WingetPackage {
                             break
                         }
                     }
-                    $packages += [PSCustomObject]@{
-                        Name = $name
-                        Id = $id
-                        Version = $version
+                    if ($id.Length -gt 2 -and $id -match '\.') {
+                        $packages += [PSCustomObject]@{
+                            Name = $name
+                            Id = $id
+                            Version = $version
+                        }
+                        Write-DiagnosticLog "Parsed single-result format successfully: Name='$name' Id='$id' Version='$version'"
+                        return $packages[0]
                     }
-                    Write-DiagnosticLog "Parsed single-result format successfully: Name='$name' Id='$id' Version='$version'"
-                    return $packages[0]
                 }
             }
         }
@@ -972,7 +973,7 @@ try {
     # Extract package details from output (in case version differs)
     $extractedPackageId = ($appInfo | Select-String -Pattern "Found (.+?) \[(.+?)\]" | ForEach-Object { $_.Matches.Groups[2].Value })
     if ($extractedPackageId) {
-        $packageId = $extractedPackageId
+        $packageId = Normalize-WingetPackageId -Id $extractedPackageId
     }
     
     $extractedVersion = ($appInfo | Select-String -Pattern "Version:\s+(.+)" | ForEach-Object { $_.Matches.Groups[1].Value.Trim() })
@@ -1551,6 +1552,8 @@ Write-Success "Created win32LobApp.json"
 
 # Step 11: Package with Content Prep Tool
 Write-Step "Step 11: Packaging with Content Prep Tool (intunewinapputil)"
+$intunewinFile = $null
+$intunewinCreated = $false
 try {
     # Check if intunewinapputil is available
     $intunewinCmd = Get-Command intunewinapputil -ErrorAction SilentlyContinue
@@ -1572,6 +1575,7 @@ try {
     & intunewinapputil -c $versionDirectory -s $installerFileName -o $outputDirectory -q
     
     if ($LASTEXITCODE -eq 0 -and (Test-Path $intunewinFile)) {
+        $intunewinCreated = $true
         Write-Success "Created IntuneWin package: $intunewinFile"
         $fileInfo = Get-Item $intunewinFile
         Write-Host "File size: $([math]::Round($fileInfo.Length / 1MB, 2)) MB" -ForegroundColor Green
@@ -1587,8 +1591,24 @@ try {
 
 # Summary
 Write-Step "Summary" "Green"
+$summaryStatus = if ($intunewinCreated) {
+    "Package created successfully!"
+} else {
+    "Package files created, but IntuneWin packaging did not complete."
+}
+$intunewinSummaryLine = if ($intunewinCreated) {
+    "- IntuneWin Package: $intunewinFile"
+} else {
+    "- IntuneWin Package: (not created - see Step 11 output)"
+}
+$nextStepUpload = if ($intunewinCreated) {
+    "3. Upload the .intunewin file to Intune"
+} else {
+    "3. Re-run intunewinapputil manually, then upload the .intunewin file to Intune"
+}
+
 Write-Host @"
-Package created successfully!
+$summaryStatus
 
 Package Details:
 - Application: $displayName
@@ -1597,7 +1617,7 @@ Package Details:
 - Publisher: $publisher
 - Installer: $installerFileName
 - Output Directory: $versionDirectory
-- IntuneWin Package: $intunewinFile
+$intunewinSummaryLine
 
 Files Created:
 - detection.ps1 (Registry-based detection)
@@ -1607,12 +1627,12 @@ Files Created:
 - readme.txt (Documentation)
 - icon.png (Application icon, if available)
 - $installerFileName (Installer file)
-- $($installerFile.BaseName).intunewin (Intune package)
+$(if ($intunewinCreated) { "- $($installerFile.BaseName).intunewin (Intune package)" })
 
 Next Steps:
 1. Review the generated files in: $versionDirectory
 2. Test the detection script if needed
-3. Upload the .intunewin file to Intune
+$nextStepUpload
 4. If any step fails, review diagnostic logs:
    - $script:DiagnosticLogPath
    - $script:SearchOutputPath

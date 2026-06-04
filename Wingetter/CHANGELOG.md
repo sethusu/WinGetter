@@ -1,5 +1,10 @@
 # Wingetter Changelog
 
+## Version 1.2 (2026-06-04)
+- Hoisted `Normalize-WingetPackageId` so search, show, and single-result parsing all normalize IDs consistently
+- Fixed single-result `Found ... [...]` parsing to normalize IDs like `Valve. Steam`
+- Fixed summary output when IntuneWin packaging fails (no longer reports success or references an unset path)
+
 ## Version 1.2 - 2026-01-22
 
 ### New Features
