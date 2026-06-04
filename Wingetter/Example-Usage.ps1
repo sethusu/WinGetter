@@ -15,7 +15,7 @@ Write-Host "`nExample 3: With custom output path" -ForegroundColor Cyan
 
 # Example 4: With custom icon
 Write-Host "`nExample 4: With custom icon" -ForegroundColor Cyan
-.\Create-IntuneWinFromWinget.ps1 -AppName "MaximaTeam.Maxima" -IconPath "D:\Intoon In Progress\Maxima\MaximaTeam.Maxima\logo.png"
+.\Create-IntuneWinFromWinget.ps1 -AppName "MaximaTeam.Maxima" -IconPath "D:\intoon in progress\Maxima\MaximaTeam.Maxima\logo.png"
 
 # Example 5: Other popular applications
 Write-Host "`nExample 5: Other applications" -ForegroundColor Cyan
