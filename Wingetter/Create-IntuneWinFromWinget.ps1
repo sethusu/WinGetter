@@ -875,17 +875,18 @@ try {
     Write-DiagnosticLog "Winget search exit code: $searchExitCode"
     Save-SearchOutputDiagnostics -SearchOutput $searchResult
     
-    # Check if search was successful - sometimes winget returns non-zero but still has results
-    $hasResults = $searchResult | Select-String -Pattern "Name\s+Id\s+Version|Found.*\[" -Quiet
+    # Check if search output appears to contain results. We intentionally use broad patterns
+    # because winget output formatting can vary by locale, terminal width, and font.
+    $hasResults = $searchResult | Select-String -Pattern "Name\s+Id\s+Version|Found.*\[|[A-Za-z0-9][A-Za-z0-9.\-\s]*\.[A-Za-z0-9][A-Za-z0-9.\-\s]*\s+[0-9][0-9A-Za-z._-]*" -Quiet
     Write-DiagnosticLog "Winget search has recognizable result markers: $hasResults"
     if ($searchExitCode -ne 0) {
-        # Check if we got useful output despite the error code
+        # Do not fail early. Some environments return non-zero with usable output.
         if (-not $hasResults) {
-            Write-Host "Winget search output:" -ForegroundColor Yellow
-            Write-Host $searchResult
-            throw "Winget search failed with exit code $searchExitCode. Is Winget installed? Check output above."
+            Write-Host "Note: Winget search returned exit code $searchExitCode and no obvious markers; attempting resilient parsing and fallbacks..." -ForegroundColor Yellow
+            Write-DiagnosticLog "Winget search returned non-zero without obvious result markers. Proceeding with resilient parsing." "WARN"
         } else {
             Write-Host "Note: Winget returned exit code $searchExitCode but found results. Continuing..." -ForegroundColor Yellow
+            Write-DiagnosticLog "Winget search returned non-zero but output appears parseable. Continuing." "WARN"
         }
     }
     
@@ -950,18 +951,23 @@ try {
     
     # Check if show command was successful - sometimes winget returns non-zero but still has info
     $hasAppInfo = $appInfo | Select-String -Pattern "Found.*\[|Version:\s+|Publisher:\s+" -Quiet
+    $showInfoUnavailable = $false
     if ($showExitCode -ne 0) {
         # Check if we got useful output despite the error code
         if (-not $hasAppInfo) {
             Write-Host "Winget show output:" -ForegroundColor Yellow
             Write-Host $appInfo
-            throw "Failed to get app information from Winget (exit code: $showExitCode). Check output above."
+            Write-Host "Warning: winget show returned no metadata; continuing with search-derived defaults." -ForegroundColor Yellow
+            Write-DiagnosticLog "winget show failed for '$packageId' with exit code $showExitCode and no parseable metadata. Continuing with defaults." "WARN"
+            $showInfoUnavailable = $true
         } else {
             Write-Host "Note: Winget returned exit code $showExitCode but found app info. Continuing..." -ForegroundColor Yellow
         }
     }
     
-    Write-Host $appInfo
+    if (-not $showInfoUnavailable) {
+        Write-Host $appInfo
+    }
     
     # Extract package details from output (in case version differs)
     $extractedPackageId = ($appInfo | Select-String -Pattern "Found (.+?) \[(.+?)\]" | ForEach-Object { $_.Matches.Groups[2].Value })
@@ -975,7 +981,13 @@ try {
     }
     
     if (-not $foundVersion) {
-        throw "Could not determine version from Winget output"
+        if ($selectedVersion -and $selectedVersion -ne "Unknown") {
+            $foundVersion = $selectedVersion
+            Write-DiagnosticLog "Version not found from winget show output, falling back to selected search version '$foundVersion'" "WARN"
+        } else {
+            $foundVersion = "Unknown"
+            Write-DiagnosticLog "Version not found from show/search output. Falling back to 'Unknown'." "WARN"
+        }
     }
     
     if ($Version -and $foundVersion -ne $Version) {
