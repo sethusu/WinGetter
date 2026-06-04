@@ -73,6 +73,53 @@ function Select-WingetPackage {
     } elseif ($SearchOutput -isnot [array]) {
         $SearchOutput = @($SearchOutput)
     }
+
+    function Normalize-WingetPackageId {
+        param([string]$Id)
+
+        if ([string]::IsNullOrWhiteSpace($Id)) {
+            return ""
+        }
+
+        # Winget output can sometimes render IDs with whitespace around dots (for example: "Valve. Steam").
+        # Collapse these artifacts so IDs still parse correctly.
+        $normalizedId = $Id.Trim()
+        $normalizedId = $normalizedId -replace '\s*\.\s*', '.'
+        $normalizedId = $normalizedId -replace '\s+', ''
+        return $normalizedId
+    }
+
+    function Add-PackageIfValid {
+        param(
+            [string]$Name,
+            [string]$Id,
+            [string]$Version,
+            [ref]$PackageList
+        )
+
+        $nameValue = if ($Name) { $Name.Trim() } else { "" }
+        $idValue = Normalize-WingetPackageId -Id $Id
+        $versionValue = if ($Version) { $Version.Trim() } else { "" }
+
+        if ($nameValue.Length -eq 0 -or
+            $idValue.Length -le 2 -or
+            $idValue -notmatch '\.' -or
+            $versionValue.Length -eq 0 -or
+            $versionValue -notmatch '^[0-9A-Za-z][0-9A-Za-z._-]*$') {
+            return $false
+        }
+
+        $alreadyExists = $PackageList.Value | Where-Object { $_.Id -eq $idValue -and $_.Version -eq $versionValue }
+        if (-not $alreadyExists) {
+            $PackageList.Value += [PSCustomObject]@{
+                Name = $nameValue
+                Id = $idValue
+                Version = $versionValue
+            }
+        }
+
+        return $true
+    }
     
     # Parse the search results
     $packages = @()
@@ -117,6 +164,13 @@ function Select-WingetPackage {
         return $null
     }
     
+    # Use header positions as fixed-width column boundaries when possible.
+    $headerLine = $SearchOutput[$headerLineIndex]
+    $idColumnStart = $headerLine.IndexOf("Id")
+    $versionColumnStart = $headerLine.IndexOf("Version")
+    $sourceColumnStart = $headerLine.IndexOf("Source")
+    $canUseFixedColumns = $idColumnStart -gt 0 -and $versionColumnStart -gt $idColumnStart
+
     # Parse table rows starting after the header
     $skipNextLine = $false
     for ($i = $headerLineIndex + 1; $i -lt $SearchOutput.Count; $i++) {
@@ -158,49 +212,45 @@ function Select-WingetPackage {
             continue
         }
         
-        # Parse table rows - winget uses variable-width columns with multiple spaces
-        # The format is: Name (spaces) Id (spaces) Version (spaces) Match (spaces) Source
-        # We need to extract the first 3 columns
-        
-        # Try a more robust parsing approach
-        # Look for pattern: text, then 2+ spaces, then text with dots (package ID), then 2+ spaces, then version
-        # Make the regex more flexible to handle various formats
-        if ($line -match "^\s*(.+?)\s{2,}([A-Za-z0-9][A-Za-z0-9.]*[A-Za-z0-9]|[A-Za-z0-9]+)\s{2,}([0-9][0-9A-Za-z.-]*[0-9A-Za-z]|[0-9]+)") {
-            $name = $matches[1].Trim()
-            $id = $matches[2].Trim()
-            $version = $matches[3].Trim()
-            
-            # Additional validation - ID should contain a dot (package format: Publisher.Package)
-            if ($name.Length -gt 0 -and $id.Length -gt 2 -and $id -match '\.' -and $version.Length -gt 0) {
-                $packages += [PSCustomObject]@{
-                    Name = $name
-                    Id = $id
-                    Version = $version
-                }
+        # Strategy 1: Parse using fixed-width column positions from the header line.
+        if ($canUseFixedColumns -and $line.Length -gt $versionColumnStart) {
+            $nameValue = $line.Substring(0, [Math]::Min($idColumnStart, $line.Length)).Trim()
+
+            $idLength = [Math]::Min($line.Length, $versionColumnStart) - $idColumnStart
+            $idValue = if ($idLength -gt 0) {
+                $line.Substring($idColumnStart, $idLength).Trim()
+            } else {
+                ""
+            }
+
+            $versionEnd = if ($sourceColumnStart -gt $versionColumnStart) {
+                [Math]::Min($line.Length, $sourceColumnStart)
+            } else {
+                $line.Length
+            }
+            $versionLength = $versionEnd - $versionColumnStart
+            $versionValue = if ($versionLength -gt 0) {
+                $line.Substring($versionColumnStart, $versionLength).Trim()
+            } else {
+                ""
+            }
+
+            if (Add-PackageIfValid -Name $nameValue -Id $idValue -Version $versionValue -PackageList ([ref]$packages)) {
                 continue
             }
         }
-        
-        # Fallback: Try splitting on 2+ spaces (more reliable for fixed-width tables)
-        $parts = $line -split '\s{2,}', [System.StringSplitOptions]::RemoveEmptyEntries
-        
-        if ($parts.Count -ge 3) {
-            $name = $parts[0].Trim()
-            $id = $parts[1].Trim()
-            $version = $parts[2].Trim()
-            
-            # Validate that we have reasonable values
-            # ID should contain a dot (package format: Publisher.Package)
-            # Version should look like a version number
-            if ($name.Length -gt 0 -and 
-                $id.Length -gt 2 -and $id -match '\.' -and
-                $version.Length -gt 0 -and $version -match '^[0-9A-Za-z.-]+$') {
-                $packages += [PSCustomObject]@{
-                    Name = $name
-                    Id = $id
-                    Version = $version
-                }
+
+        # Strategy 2: regex split with support for tabs and IDs containing rendered whitespace.
+        if ($line -match "^\s*(.+?)(?:\s{2,}|\t+)([A-Za-z0-9][A-Za-z0-9.\-\s]*[A-Za-z0-9])(?:\s{2,}|\t+)([0-9][0-9A-Za-z._-]*[0-9A-Za-z]|[0-9]+)") {
+            if (Add-PackageIfValid -Name $matches[1] -Id $matches[2] -Version $matches[3] -PackageList ([ref]$packages)) {
+                continue
             }
+        }
+
+        # Strategy 3: generic token fallback for tab- or space-delimited output.
+        $parts = $line -split '(?:\s{2,}|\t+)', [System.StringSplitOptions]::RemoveEmptyEntries
+        if ($parts.Count -ge 3) {
+            Add-PackageIfValid -Name $parts[0] -Id $parts[1] -Version $parts[2] -PackageList ([ref]$packages) | Out-Null
         }
     }
     
