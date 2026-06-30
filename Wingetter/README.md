@@ -169,6 +169,7 @@ The uninstall script:
 - Review detection script logs in: `%ProgramData%\Microsoft\IntuneManagementExtension\Logs\`
 - For JetBrains products: Check if DisplayVersion contains build numbers instead of marketing versions. The script should automatically extract the version from DisplayName.
 - Test detection script manually: `powershell -ExecutionPolicy Bypass -File detection.ps1` (should exit with code 0 if installed)
+- Run `.\Test-Wingetter.ps1` to verify the generator does not contain known-bad patterns
 
 ## Notes
 
