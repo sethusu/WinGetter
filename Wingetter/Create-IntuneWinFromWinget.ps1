@@ -73,6 +73,10 @@ function Select-WingetPackage {
     } elseif ($SearchOutput -isnot [array]) {
         $SearchOutput = @($SearchOutput)
     }
+
+    $SearchOutput = $SearchOutput | ForEach-Object {
+        if ($_ -is [System.Management.Automation.ErrorRecord]) { $_.ToString() } else { "$_" }
+    }
     
     # Parse the search results
     $packages = @()
@@ -272,9 +276,21 @@ function Write-Success {
     Write-Host "[SUCCESS] $Message" -ForegroundColor Green
 }
 
-function Write-Error {
+function Write-Failure {
     param([string]$Message)
     Write-Host "[ERROR] $Message" -ForegroundColor Red
+}
+
+function Write-Utf8NoBomFile {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        [string]$Content
+    )
+
+    $utf8NoBom = New-Object System.Text.UTF8Encoding $false
+    [System.IO.File]::WriteAllText($Path, $Content, $utf8NoBom)
 }
 
 # Function to extract icon from executable
@@ -440,12 +456,13 @@ function Get-LogoFromWeb {
         )
     }
     
-    # Try common CDN/hosting patterns
-    $cdnPatterns = @(
-        "https://cdn.jsdelivr.net/gh/$orgName/$projectName@main/logo.png",
-        "https://cdn.jsdelivr.net/gh/$orgName/$projectName@master/logo.png"
-    )
-    $urls += $cdnPatterns
+    # Try common CDN/hosting patterns (only when org/repo are known)
+    if ($orgName -and $projectName) {
+        $urls += @(
+            "https://cdn.jsdelivr.net/gh/$orgName/$projectName@main/logo.png",
+            "https://cdn.jsdelivr.net/gh/$orgName/$projectName@master/logo.png"
+        )
+    }
     
     # Remove duplicates while preserving order
     $urls = $urls | Select-Object -Unique
@@ -507,7 +524,8 @@ function Start-WingetDownloadWithProgress {
     param(
         [string]$PackageId,
         [string]$DownloadDirectory,
-        [string]$PackageName
+        [string]$PackageName,
+        [string]$Version = $null
     )
     
     Write-Host "Starting download..." -ForegroundColor Cyan
@@ -519,13 +537,16 @@ function Start-WingetDownloadWithProgress {
     # Start winget download in background job
     # Use --accept-package-agreements if supported, otherwise just --accept-source-agreements
     $job = Start-Job -ScriptBlock {
-        param($pkgId, $dir, $supportsPkgAgreements)
-        if ($supportsPkgAgreements) {
-            winget download $pkgId --exact --download-directory $dir --accept-source-agreements --accept-package-agreements 2>&1
-        } else {
-            winget download $pkgId --exact --download-directory $dir --accept-source-agreements 2>&1
+        param($pkgId, $dir, $supportsPkgAgreements, $version)
+        $wingetArgs = @('download', $pkgId, '--exact', '--download-directory', $dir, '--accept-source-agreements')
+        if ($version) {
+            $wingetArgs += @('--version', $version)
         }
-    } -ArgumentList $PackageId, $DownloadDirectory, $supportsPackageAgreements
+        if ($supportsPkgAgreements) {
+            $wingetArgs += '--accept-package-agreements'
+        }
+        & winget @wingetArgs 2>&1
+    } -ArgumentList $PackageId, $DownloadDirectory, $supportsPackageAgreements, $Version
     
     # Monitor download progress
     $previousSize = 0
@@ -640,14 +661,12 @@ function Start-WingetDownloadWithProgress {
     # Clear progress bar
     Write-Progress -Activity "Downloading $PackageName" -Completed
     
-    # Check exit code - jobs don't preserve exit codes well, so check output for errors
-    if ($jobOutput) {
-        $errorIndicators = $jobOutput | Select-String -Pattern "error|failed|exception" -CaseSensitive:$false
-        if ($errorIndicators) {
-            Write-Host "Winget output:" -ForegroundColor Yellow
-            Write-Host $jobOutput
-            throw "Winget download may have failed. Check output above."
-        }
+    # Check job exit code and winget output for real failures
+    $failureIndicators = $jobOutput | Select-String -Pattern "No applicable installer|No package found|Download failed|An unexpected error|0x8" -CaseSensitive:$false
+    if ($failureIndicators) {
+        Write-Host "Winget output:" -ForegroundColor Yellow
+        Write-Host $jobOutput
+        throw "Winget download failed. Check output above."
     }
     
     return $jobOutput
@@ -749,7 +768,7 @@ try {
     }
     
     if ($Version -and $foundVersion -ne $Version) {
-        Write-Error "Requested version $Version does not match found version $foundVersion"
+        Write-Failure "Requested version $Version does not match found version $foundVersion"
         $foundVersion = $Version
     }
     
@@ -779,7 +798,7 @@ try {
     Write-Success "Found: $displayName ($packageId) version $foundVersion"
     
 } catch {
-    Write-Error "Failed to search Winget: $_"
+    Write-Failure "Failed to search Winget: $_"
     exit 1
 }
 
@@ -799,7 +818,7 @@ if (-not (Test-Path $versionDirectory)) {
 Write-Step "Step 3: Downloading installer"
 try {
     # Download with progress bar
-    $downloadResult = Start-WingetDownloadWithProgress -PackageId $packageId -DownloadDirectory $versionDirectory -PackageName $displayName
+    $downloadResult = Start-WingetDownloadWithProgress -PackageId $packageId -DownloadDirectory $versionDirectory -PackageName $displayName -Version $foundVersion
     
     # Display download result summary
     if ($downloadResult) {
@@ -841,7 +860,7 @@ try {
     }
     
 } catch {
-    Write-Error "Failed to download installer: $_"
+    Write-Failure "Failed to download installer: $_"
     exit 1
 }
 
@@ -851,12 +870,17 @@ try {
     $installerHash = (Get-FileHash -Path $installerFile.FullName -Algorithm SHA256).Hash
     Write-Success "Installer SHA256: $installerHash"
 } catch {
-    Write-Error "Failed to calculate hash: $_"
+    Write-Failure "Failed to calculate hash: $_"
     $installerHash = ""
 }
 
 # Step 5: Create registry-based detection script
 Write-Step "Step 5: Creating registry-based detection script"
+$packageIdParts = $packageId -split '\.'
+$packageIdPublisher = $packageIdParts[0]
+$packageIdProduct = if ($packageIdParts.Count -gt 1) { $packageIdParts[-1] } else { $packageId }
+$displayNameFirstWord = ($displayName -split '\s+')[0]
+
 $detectionScript = @"
 # Registry-based detection script for $displayName
 # Checks for $displayName installation in Windows Uninstall registry keys
@@ -864,6 +888,36 @@ $detectionScript = @"
 `$packageId = "$packageId"
 `$version = "$foundVersion"
 `$displayName = "$displayName"
+
+function Get-InstalledVersionFromRegistryEntry {
+    param(
+        [Parameter(Mandatory = `$true)]
+        `$RegistryKey,
+        [Parameter(Mandatory = `$true)]
+        [string]`$PackageId
+    )
+
+    `$extractedVersion = `$null
+    `$isJetBrains = `$PackageId -like "JetBrains.*"
+
+    if (`$RegistryKey.DisplayName -match "(\d+(?:\.\d+){1,3})") {
+        `$candidate = `$matches[1]
+        if (`$isJetBrains) {
+            `$extractedVersion = `$candidate
+            Write-Host "Extracted JetBrains version from DisplayName: `$extractedVersion"
+        }
+        elseif (`$RegistryKey.DisplayVersion -and `$RegistryKey.DisplayVersion -match "^\d{2,3}\.\d{4,}") {
+            `$extractedVersion = `$candidate
+            Write-Host "Extracted version from DisplayName (build number in DisplayVersion): `$extractedVersion"
+        }
+    }
+
+    if (-not `$extractedVersion) {
+        `$extractedVersion = `$RegistryKey.DisplayVersion
+    }
+
+    return `$extractedVersion
+}
 
 # Start transcript for logging
 `$logPath = "`$env:ProgramData\Microsoft\IntuneManagementExtension\Logs\`$packageId-detection.log"
@@ -879,80 +933,59 @@ Write-Host "Starting `$packageId `$version detection (Registry-based)"
 `$found = `$false
 `$installedVersion = `$null
 `$allMatchingVersions = @()
+`$searchTerms = @(
+    "*$displayName*",
+    "*$displayNameFirstWord*",
+    "*$packageIdPublisher*",
+    "*$packageIdProduct*"
+)
 
 # Search for application in registry - collect ALL matching entries
 foreach (`$regPath in `$registryPaths) {
     try {
-        # Get all uninstall keys from this path
         `$allKeys = Get-ItemProperty `$regPath -ErrorAction SilentlyContinue
-        
+
         if (`$allKeys) {
-            # Search for application - use flexible matching
-            # First try exact display name match, then partial match, then package ID match
-            `$searchTerms = @(
-                "*$displayName*",
-                "*$($displayName.Split(' ')[0])*",  # First word of display name (e.g., "Tableau" from "Tableau Desktop")
-                "*$($packageId.Split('.')[0])*"     # First part of package ID (e.g., "Tableau" from "Tableau.Desktop")
-            )
-            
-            # Filter for matching entries
             `$uninstallKeys = `$allKeys | Where-Object {
                 `$key = `$_
-                `$matched = `$false
                 foreach (`$term in `$searchTerms) {
-                    if ((`$key.DisplayName -and `$key.DisplayName -like `$term) -or 
+                    if ((`$key.DisplayName -and `$key.DisplayName -like `$term) -or
                         (`$key.PSChildName -and `$key.PSChildName -like `$term)) {
-                        `$matched = `$true
-                        break
+                        return `$true
                     }
                 }
-                `$matched
+                return `$false
             }
-            
+
             if (`$uninstallKeys) {
                 foreach (`$key in `$uninstallKeys) {
                     Write-Host "Found registry key: `$(`$key.PSChildName)"
                     Write-Host "DisplayName: `$(`$key.DisplayName)"
                     Write-Host "DisplayVersion: `$(`$key.DisplayVersion)"
-                    
-                    # Check if this is our application - be flexible with name matching
-                    # Match if DisplayName contains key words from our display name or package ID
+
                     `$nameMatch = `$false
                     `$displayNameWords = "$displayName" -split '\s+'
                     `$packageIdWords = "$packageId" -split '\.'
-                    
-                    # Check if DisplayName contains any significant word from our search terms
+
                     foreach (`$word in `$displayNameWords) {
-                        if (`$word.Length -gt 3 -and `$key.DisplayName -and `$key.DisplayName -like "*`$word*") {
+                        if (`$word.Length -gt 2 -and `$key.DisplayName -and `$key.DisplayName -like "*`$word*") {
                             `$nameMatch = `$true
                             break
                         }
                     }
-                    
-                    # Also check package ID words
+
                     if (-not `$nameMatch) {
                         foreach (`$word in `$packageIdWords) {
-                            if (`$word.Length -gt 3 -and `$key.DisplayName -and `$key.DisplayName -like "*`$word*") {
+                            if (`$word.Length -gt 2 -and `$key.DisplayName -and `$key.DisplayName -like "*`$word*") {
                                 `$nameMatch = `$true
                                 break
                             }
                         }
                     }
-                    
-                    # If name matches, add it to our collection
-                    if (`$nameMatch -and `$key.DisplayName -and `$key.DisplayName -like "*$($displayName.Split(' ')[0])*") {
-                        # For JetBrains products, try to extract version from DisplayName first
-                        # DisplayName format: "WebStorm 2025.3.1.1" contains the marketing version
-                        # DisplayVersion format: "253.29346.242" is the build number
-                        `$extractedVersion = `$null
-                        if (`$key.DisplayName -match "(\d+\.\d+\.\d+\.\d+)") {
-                            `$extractedVersion = `$matches[1]
-                            Write-Host "Extracted version from DisplayName: `$extractedVersion"
-                        }
-                        
-                        # Use extracted version if found, otherwise use DisplayVersion
-                        `$versionToUse = if (`$extractedVersion) { `$extractedVersion } else { `$key.DisplayVersion }
-                        
+
+                    if (`$nameMatch) {
+                        `$versionToUse = Get-InstalledVersionFromRegistryEntry -RegistryKey `$key -PackageId `$packageId
+
                         if (`$versionToUse) {
                             `$allMatchingVersions += @{
                                 DisplayName = `$key.DisplayName
@@ -974,26 +1007,24 @@ foreach (`$regPath in `$registryPaths) {
 # Find the highest version among all matching installations
 if (`$allMatchingVersions.Count -gt 0) {
     Write-Host "Found `$(`$allMatchingVersions.Count) matching installation(s)"
-    
-    # Get the version - if only one, use it directly; otherwise sort
+
     if (`$allMatchingVersions.Count -eq 1) {
         `$highestVersion = `$allMatchingVersions[0]
         `$installedVersion = `$highestVersion['DisplayVersion']
         `$found = `$true
         Write-Host "Found version: `$installedVersion (from `$(`$highestVersion['DisplayName']))"
     } else {
-        # Multiple versions - sort to find highest
         try {
             `$sortedVersions = `$allMatchingVersions | Sort-Object -Property @{
                 Expression = {
                     try {
-                        [version]`$_.DisplayVersion
+                        [version]`$_.['DisplayVersion']
                     } catch {
                         [version]"0.0.0"
                     }
                 }
             } -Descending
-            
+
             if (`$sortedVersions -and `$sortedVersions.Count -gt 0) {
                 `$highestVersion = `$sortedVersions[0]
                 `$installedVersion = `$highestVersion['DisplayVersion']
@@ -1017,18 +1048,17 @@ if (`$found) {
         Stop-Transcript
         Exit 0
     }
-    
+
     if (`$installedVersion -eq `$version) {
         Write-Host "`$packageId version `$version is installed, exiting with code 0"
         Stop-Transcript
         Exit 0
     }
-    
-    # Compare versions
+
     try {
         `$installedVer = [version]`$installedVersion
         `$expectedVer = [version]`$version
-        
+
         if (`$installedVer -ge `$expectedVer) {
             Write-Host "`$packageId is installed with version `$installedVersion (equal or higher than expected `$version), exit code 0"
             Stop-Transcript
@@ -1041,9 +1071,9 @@ if (`$found) {
         }
     }
     catch {
-        # Fallback to string comparison if version parsing fails
-        if (`$installedVersion -ge `$version) {
-            Write-Host "`$packageId is installed with version `$installedVersion (equal or higher than expected `$version), exit code 0"
+        Write-Host "Version parse fallback for installed=`$installedVersion expected=`$version"
+        if ([string]::Compare(`$installedVersion, `$version, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+            Write-Host "`$packageId is installed with version `$installedVersion (string compare), exit code 0"
             Stop-Transcript
             Exit 0
         }
@@ -1061,7 +1091,7 @@ Exit 1
 "@
 
 $detectionScriptPath = Join-Path $versionDirectory "detection.ps1"
-$detectionScript | Set-Content -Path $detectionScriptPath -Encoding UTF8
+Write-Utf8NoBomFile -Path $detectionScriptPath -Content $detectionScript
 Write-Success "Created detection script: detection.ps1"
 
 # Step 6: Create uninstall script
@@ -1073,6 +1103,12 @@ $uninstallScript = @"
 `$packageId = "$packageId"
 `$action = "uninstall"
 `$displayName = "$displayName"
+`$searchTerms = @(
+    "*$displayName*",
+    "*$displayNameFirstWord*",
+    "*$packageIdPublisher*",
+    "*$packageIdProduct*"
+)
 
 # Start transcript for logging
 `$logPath = "`$env:ProgramData\Microsoft\IntuneManagementExtension\Logs\`$packageId-`$action.log"
@@ -1092,17 +1128,23 @@ Write-Host "Starting `$packageId `$action"
 foreach (`$regPath in `$registryPaths) {
     try {
         `$uninstallKeys = Get-ItemProperty `$regPath -ErrorAction SilentlyContinue | Where-Object {
-            `$_.DisplayName -like "*$displayName*" -or 
-            `$_.PSChildName -like "*$($packageId.ToLower())*" -or
-            `$_.PSChildName -like "*$($packageId)*"
+            `$key = `$_
+            foreach (`$term in `$searchTerms) {
+                if ((`$key.DisplayName -and `$key.DisplayName -like `$term) -or
+                    (`$key.PSChildName -and `$key.PSChildName -like `$term)) {
+                    return `$true
+                }
+            }
+            return `$false
         }
-        
+
         if (`$uninstallKeys) {
             foreach (`$key in `$uninstallKeys) {
-                if (`$key.DisplayName -like "*$displayName*" -or `$key.DisplayName -eq `$displayName) {
+                if (`$key.UninstallString) {
                     `$uninstallString = `$key.UninstallString
                     `$quietUninstallString = `$key.QuietUninstallString
-                    Write-Host "Found uninstall string: `$uninstallString"
+                    Write-Host "Found uninstall string for: `$(`$key.DisplayName)"
+                    Write-Host "Uninstall string: `$uninstallString"
                     break
                 }
             }
@@ -1154,7 +1196,7 @@ catch {
 "@
 
 $uninstallScriptPath = Join-Path $versionDirectory "uninstall.ps1"
-$uninstallScript | Set-Content -Path $uninstallScriptPath -Encoding UTF8
+Write-Utf8NoBomFile -Path $uninstallScriptPath -Content $uninstallScript
 Write-Success "Created uninstall script: uninstall.ps1"
 
 # Step 7: Handle icon file
@@ -1204,7 +1246,7 @@ $description
 "@
 
 $readmePath = Join-Path $versionDirectory "readme.txt"
-$readmeContent | Set-Content -Path $readmePath -Encoding UTF8
+Write-Utf8NoBomFile -Path $readmePath -Content $readmeContent
 Write-Success "Created readme.txt"
 
 # Step 9: Create app.json
@@ -1230,7 +1272,7 @@ $appJson = @{
 }
 
 $appJsonPath = Join-Path $versionDirectory "app.json"
-$appJson | ConvertTo-Json -Depth 10 | Set-Content -Path $appJsonPath -Encoding UTF8
+Write-Utf8NoBomFile -Path $appJsonPath -Content ($appJson | ConvertTo-Json -Depth 10)
 Write-Success "Created app.json"
 
 # Step 10: Create win32LobApp.json with registry-based detection
@@ -1302,7 +1344,7 @@ if (-not $iconBase64) {
 }
 
 $win32LobAppJsonPath = Join-Path $versionDirectory "win32LobApp.json"
-$win32LobAppJson | ConvertTo-Json -Depth 10 | Set-Content -Path $win32LobAppJsonPath -Encoding UTF8
+Write-Utf8NoBomFile -Path $win32LobAppJsonPath -Content ($win32LobAppJson | ConvertTo-Json -Depth 10)
 Write-Success "Created win32LobApp.json"
 
 # Step 11: Package with Content Prep Tool
@@ -1336,7 +1378,7 @@ try {
     }
     
 } catch {
-    Write-Error "Failed to create IntuneWin package: $_"
+    Write-Failure "Failed to create IntuneWin package: $_"
     Write-Host "You can manually run: intunewinapputil -c `"$versionDirectory`" -s `"$installerFileName`" -o `"$outputDirectory`" -q" -ForegroundColor Yellow
 }
 

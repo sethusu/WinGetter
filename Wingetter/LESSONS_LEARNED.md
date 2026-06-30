@@ -69,7 +69,14 @@ if ($allMatchingVersions.Count -eq 1) {
 
 ## Best Practices Established
 
-### 1. Testing Detection Scripts
+### Testing Before Deployment
+
+Run the included validation script on Windows before packaging:
+
+```powershell
+.\Test-Wingetter.ps1
+```
+
 Always test detection scripts manually before deploying:
 ```powershell
 powershell -ExecutionPolicy Bypass -File detection.ps1
@@ -123,7 +130,7 @@ When fixing detection scripts:
 | Issue | Symptom | Fix |
 |-------|---------|-----|
 | Version not extracted | "Highest version found:  (from )" | Check regex pattern matches DisplayName format |
-| Hashtable access fails | Empty version after sorting | Use bracket notation `$hash['Property']` |
+| Hashtable access fails | Empty version after sorting | Use bracket notation `$hash['Property']` in **both** direct access and `Sort-Object` expressions (`$_.['DisplayVersion']`) |
 | Build number vs marketing version | Version comparison fails | Extract from DisplayName for JetBrains products |
 | Multiple installations | Wrong version selected | Ensure sorting logic uses correct property access |
 

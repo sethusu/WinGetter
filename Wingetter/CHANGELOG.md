@@ -1,5 +1,24 @@
 # Wingetter Changelog
 
+## Version 1.3 - 2026-06-30
+
+### Critical Fixes
+- **Detection script hashtable sorting**: Fixed `Sort-Object` to use `$_.['DisplayVersion']` instead of `$_.DisplayVersion`, which returned empty values and caused false detection failures when multiple registry entries matched.
+- **JetBrains / build-number version handling**: Added `Get-InstalledVersionFromRegistryEntry` to extract marketing versions from `DisplayName` for JetBrains products and other apps that store build numbers in `DisplayVersion`.
+- **Registry name matching**: Removed an extra first-word filter that rejected valid matches (for example, when Winget display name and registry display name differ).
+- **Winget download version**: `winget download` now passes `--version` so packages are downloaded at the version used for detection.
+- **UTF-8 without BOM**: Detection, uninstall, readme, and JSON files are written without a BOM to avoid Intune script execution issues on Windows PowerShell 5.1.
+- **Download false positives**: Winget download error detection no longer flags generic words like "error" in normal output.
+- **Uninstall matching**: Uninstall script now uses the same flexible search terms as detection.
+
+### Other Improvements
+- Renamed custom `Write-Error` helper to `Write-Failure` to avoid shadowing the built-in cmdlet.
+- Fixed CDN logo URL generation when GitHub org/repo are unknown.
+- Added `Test-Wingetter.ps1` static validation script.
+- Improved Winget search output parsing for `ErrorRecord` objects.
+
+---
+
 ## Version 1.2 - 2026-01-22
 
 ### New Features
