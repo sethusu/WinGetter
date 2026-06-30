@@ -15,6 +15,21 @@ This tool automates the creation of IntuneWin packages from Winget applications 
 - ✅ Proper installer filename handling
 - ✅ Smart version detection (handles build numbers vs marketing versions)
 - ✅ Version included in readme.txt
+- ✅ Hardened winget search parsing (`Modules/WingetSearch.psm1`)
+- ✅ Install wrapper script (`install.ps1`) with Intune return-code handling
+- ✅ Pester unit tests for parser and script generation
+
+## Project Structure
+
+```
+Wingetter/
+├── Create-IntuneWinFromWinget.ps1   # Main CLI entry point
+├── Modules/
+│   ├── WingetSearch.psm1            # Winget search/show parsing
+│   └── ScriptTemplates.psm1         # Install/detection/uninstall templates
+├── Tests/                           # Pester tests and fixtures
+└── Run-Tests.ps1                    # Test runner
+```
 
 ## Prerequisites
 
@@ -94,6 +109,7 @@ A dialog box will appear prompting you to enter the Winget Package ID.
     ├── logo.png (optional, if exists)
     └── {Version}/
         ├── {InstallerFileName}.exe
+        ├── install.ps1
         ├── detection.ps1
         ├── uninstall.ps1
         ├── app.json
@@ -144,6 +160,16 @@ The uninstall script:
 ```powershell
 .\Create-IntuneWinFromWinget.ps1 -AppName "7zip.7zip" -Version "23.01"
 ```
+
+## Testing
+
+Parser and script-generation logic can be validated without Winget:
+
+```powershell
+.\Run-Tests.ps1
+```
+
+This runs Pester tests for winget output parsing and Intune script templates. Full packaging still requires Windows, Winget, and the Content Prep Tool.
 
 ## Troubleshooting
 

@@ -1,5 +1,22 @@
 # Wingetter Changelog
 
+## Version 1.3 - 2026-06-30
+
+### Fixes
+- **Winget search reliability**: Extracted parsing into `Modules/WingetSearch.psm1` with column-aware table parsing, exact ID lookup, truncated ID resolution, and 17 Pester tests.
+- **Version-specific downloads**: `winget download` now passes `--version` when a version is specified.
+- **Detection script failures**: Replaced hashtable-based version sorting (broken dot-notation access) with `[PSCustomObject]` entries and improved DisplayName version extraction for JetBrains-style build numbers.
+- **False download failures**: Narrowed winget download error detection to real failure phrases instead of matching any output containing "error".
+- **Cmdlet shadowing**: Renamed custom `Write-Error` helper to `Write-WingetterError` to avoid conflicting with the built-in cmdlet.
+
+### Enhancements
+- Added `install.ps1` wrapper with transcript logging and Intune return codes (3010, 1641, 1618).
+- Intune install/uninstall commands now invoke `install.ps1` / `uninstall.ps1` via sysnative PowerShell.
+- Added `Modules/ScriptTemplates.psm1` for shared script generation.
+- Added `AGENTS.md` with cloud development guidance.
+
+---
+
 ## Version 1.2 - 2026-01-22
 
 ### New Features
