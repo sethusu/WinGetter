@@ -431,6 +431,69 @@ function Update-SelectedAppDisplay {
     }
 }
 
+function Start-PackageIconPreview {
+    param(
+        $Package,
+        $IconPreview,
+        $IconStatus,
+        $LogText
+    )
+
+    if ($script:iconPreviewJob) {
+        Remove-Job -Job $script:iconPreviewJob -Force -ErrorAction SilentlyContinue
+        $script:iconPreviewJob = $null
+    }
+
+    $previewPath = Join-Path $env:TEMP "wingetter-preview-$($Package.Id -replace '[^A-Za-z0-9._-]', '_').png"
+    if (Test-Path $previewPath) {
+        Remove-Item $previewPath -Force -ErrorAction SilentlyContinue
+    }
+
+    $iconStatus.Text = 'Fetching icon preview...'
+    Add-LogLine -LogControl $LogText -Message "Fetching icon preview for $($Package.Id)..."
+
+    $script:iconPreviewJob = Start-Job -ArgumentList $modulePath, $Package, $previewPath -ScriptBlock {
+        param($ModulePath, $SelectedPackage, $OutputPath)
+        Import-Module $ModulePath -Force
+        $version = if ($SelectedPackage.Version -and $SelectedPackage.Version -ne 'Unknown') { $SelectedPackage.Version } else { $null }
+        $details = Get-WingetPackageDetails -PackageId $SelectedPackage.Id -Version $version
+        $homepage = if ($details.Homepage) { $details.Homepage } else { '' }
+        Resolve-PackageIcon -PackageId $SelectedPackage.Id -DisplayName $SelectedPackage.Name `
+            -Publisher $details.Publisher -Homepage $homepage -Version $details.Version `
+            -OutputPath $OutputPath | Out-Null
+        if (Test-Path $OutputPath) { return $OutputPath }
+        return $null
+    }
+
+    if ($script:iconPreviewTimer) {
+        $script:iconPreviewTimer.Stop()
+    }
+
+    $script:iconPreviewTimer = New-Object System.Windows.Threading.DispatcherTimer
+    $script:iconPreviewTimer.Interval = [TimeSpan]::FromMilliseconds(250)
+    $script:iconPreviewTimer.Add_Tick({
+        if (-not $script:iconPreviewJob -or $script:iconPreviewJob.State -eq 'Running') { return }
+
+        $script:iconPreviewTimer.Stop()
+        $job = $script:iconPreviewJob
+        $script:iconPreviewJob = $null
+
+        try {
+            $previewFile = Receive-Job -Job $job
+            if ($previewFile -and (Test-Path $previewFile)) {
+                Set-IconPreview -ImageControl $iconPreview -StatusControl $iconStatus -ImagePath $previewFile
+                Add-LogLine -LogControl $logText -Message "Icon preview loaded for $($script:selectedPackage.Id)."
+            } else {
+                $iconStatus.Text = 'Icon preview unavailable. It will be resolved again during packaging.'
+                Add-LogLine -LogControl $logText -Message "Icon preview unavailable for $($script:selectedPackage.Id)."
+            }
+        } finally {
+            Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+        }
+    })
+    $script:iconPreviewTimer.Start()
+}
+
 function Complete-WingetterSearch {
     param(
         [array]$Packages,
@@ -460,6 +523,7 @@ function Complete-WingetterSearch {
         $script:selectedPackage = $picked
         Add-LogLine -LogControl $logText -Message "Selected $($script:selectedPackage.Id) version $($script:selectedPackage.Version)."
         Update-SelectedAppDisplay
+        Start-PackageIconPreview -Package $script:selectedPackage -IconPreview $iconPreview -IconStatus $iconStatus -LogText $logText
     } else {
         Add-LogLine -LogControl $logText -Message 'Search selection cancelled.'
     }
@@ -692,7 +756,9 @@ $packButton.Add_Click({
 $window.Add_Closed({
     if ($script:searchTimer) { $script:searchTimer.Stop() }
     if ($script:packTimer) { $script:packTimer.Stop() }
+    if ($script:iconPreviewTimer) { $script:iconPreviewTimer.Stop() }
     if ($script:searchJob) { Remove-Job -Job $script:searchJob -Force -ErrorAction SilentlyContinue }
+    if ($script:iconPreviewJob) { Remove-Job -Job $script:iconPreviewJob -Force -ErrorAction SilentlyContinue }
     if ($script:packWorker -and $script:packWorker.PowerShell) {
         try { $script:packWorker.PowerShell.Stop() } catch { }
         $script:packWorker.PowerShell.Dispose()

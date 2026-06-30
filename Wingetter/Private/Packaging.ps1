@@ -71,8 +71,8 @@ function Invoke-WingetterPackaging {
             Copy-Item -Path $logoFilePath -Destination $iconFilePath -Force
         } else {
             $logoDownloaded = Get-PackageLogoFromWeb -PackageId $details.PackageId -DisplayName $details.DisplayName `
-                -Publisher $details.Publisher -Homepage $details.Homepage -OutputPath $logoFilePath `
-                -InstallerPath $installerFile.FullName -OnProgress $OnProgress
+                -Publisher $details.Publisher -Homepage $details.Homepage -Version $details.Version `
+                -OutputPath $logoFilePath -InstallerPath $installerFile.FullName -OnProgress $OnProgress
             if ($logoDownloaded -and (Test-Path $logoFilePath)) {
                 Copy-Item -Path $logoFilePath -Destination $iconFilePath -Force
             }

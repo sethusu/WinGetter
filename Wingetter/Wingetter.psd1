@@ -14,6 +14,7 @@
         'Get-WingetterSettings'
         'Save-WingetterSettings'
         'Test-WingetterPrerequisites'
+        'Resolve-PackageIcon'
     )
     PrivateData       = @{
         PSData = @{

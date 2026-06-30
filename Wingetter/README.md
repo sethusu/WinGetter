@@ -114,6 +114,31 @@ Each package includes a Markdown README with a complete **Intune Portal Upload R
 - Detection method, architecture, minimum Windows release
 - Install behavior, restart behavior, return codes, icon status
 
+## Icon Resolution
+
+Wingetter resolves icons using a **tiered strategy** (most reliable first):
+
+| Priority | Source | Why it works |
+|----------|--------|--------------|
+| 1 | `winget show` icon metadata | Official WinGet CDN icon URLs when exposed by the client |
+| 2 | Winget manifest (`winget-pkgs`) | Reads `PackageUrl` / `IconUrl` from the locale YAML for that version |
+| 3 | Homepage metadata | `apple-touch-icon`, `favicon.ico`, Open Graph `og:image` from the app website |
+| 4 | Known publisher patterns | Curated fallbacks (e.g. `Valve.Steam` → `store.steampowered.com/favicon.ico`) |
+| 5 | Heuristic URLs | GitHub/logo paths, winget-pkgs icon paths |
+| 6 | Installer EXE | `ExtractAssociatedIcon` + multi-index shell extraction |
+
+**ICO favicons** (common for Steam and many publishers) are automatically converted to **PNG** for Intune.
+
+### Steam example
+
+For `Valve.Steam`, the resolver uses the official store homepage from the Winget manifest (`https://store.steampowered.com/about/`), then downloads and converts `https://store.steampowered.com/favicon.ico`.
+
+### Tips for best results
+
+- Use the **GUI icon preview** after selecting an app — if preview fails, pick a **Custom Icon** before packaging
+- For internal apps, always supply `-IconPath` or a PNG in the app folder
+- PNG 256×256 or larger works best for Intune portal upload
+
 ## Module API
 
 The core logic lives in `Wingetter.psm1`:
