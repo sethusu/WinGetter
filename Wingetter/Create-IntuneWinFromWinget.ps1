@@ -106,6 +106,11 @@ try {
     $packages = Search-WingetPackages -Query $AppName
     $selectedPackage = Select-WingetPackageFromCli -Packages $packages
 
+    $packageVersion = $Version
+    if (-not $packageVersion -and $selectedPackage.Version -and $selectedPackage.Version -ne 'Unknown') {
+        $packageVersion = $selectedPackage.Version
+    }
+
     $onProgress = {
         param($Event)
         if ($Event.Type -eq 'Progress') {
@@ -117,10 +122,16 @@ try {
         }
     }
 
-    $result = Invoke-WingetterPackaging -PackageId $selectedPackage.Id -Version $Version `
+    $result = Invoke-WingetterPackaging -PackageId $selectedPackage.Id -Version $packageVersion `
         -OutputPath $OutputPath -IconPath $IconPath -OnProgress $onProgress
 
-    Write-Host "`nPackage created successfully!" -ForegroundColor Green
+    if ($result.PackagingSucceeded) {
+        Write-Host "`nPackage created successfully!" -ForegroundColor Green
+    } else {
+        Write-Host "`nPackage created with warnings (IntuneWin packaging step failed)." -ForegroundColor Yellow
+    }
+
+    $intuneWinLine = if ($result.IntuneWinFile) { $result.IntuneWinFile } else { '(not created)' }
     Write-Host @"
 
 Package Details:
@@ -129,7 +140,7 @@ Package Details:
 - Version: $($result.Version)
 - Publisher: $($result.Publisher)
 - Output Directory: $($result.VersionDirectory)
-- IntuneWin Package: $($result.IntuneWinFile)
+- IntuneWin Package: $intuneWinLine
 
 Files Created:
 - install.ps1

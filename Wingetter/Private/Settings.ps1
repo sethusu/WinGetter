@@ -98,15 +98,15 @@ function Invoke-WingetCli {
     )
 
     $supportsAgreements = Test-WingetPackageAgreementsSupported -Command $Command
-    $args = [System.Collections.Generic.List[string]]::new()
-    $args.AddRange($Arguments)
+    $wingetArguments = [System.Collections.Generic.List[string]]::new()
+    $wingetArguments.AddRange($Arguments)
 
-    $args.Add('--accept-source-agreements')
+    $wingetArguments.Add('--accept-source-agreements')
     if ($supportsAgreements) {
-        $args.Add('--accept-package-agreements')
+        $wingetArguments.Add('--accept-package-agreements')
     }
 
-    $output = & winget $Command @args 2>&1
+    $output = & winget $Command @wingetArguments 2>&1
     return @{
         Output = $output
         ExitCode = $LASTEXITCODE

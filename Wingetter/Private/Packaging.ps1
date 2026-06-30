@@ -86,34 +86,44 @@ function Invoke-WingetterPackaging {
 
         Write-WingetterProgress -Step 10 -TotalSteps $totalSteps -StepName 'Packaging .intunewin' -Percent 88 -OnProgress $OnProgress
         $intunewinCmd = Get-Command intunewinapputil -ErrorAction SilentlyContinue
+        $packagingSucceeded = $false
         if (-not $intunewinCmd) {
-            throw 'intunewinapputil not found. Install Microsoft Win32 Content Prep Tool and ensure it is on PATH.'
-        }
+            Write-WingetterLog -Message 'intunewinapputil not found. Install Microsoft Win32 Content Prep Tool and ensure it is on PATH.' -Level Warning -OnProgress $OnProgress
+            Write-WingetterProgress -Step 12 -TotalSteps $totalSteps -StepName 'Complete with warnings' -Percent 100 -Message 'Metadata created, but Content Prep Tool is unavailable.' -Status Completed -OnProgress $OnProgress
+        } else {
+            $outputDirectory = Split-Path $versionDirectory -Parent
+            $intunewinFile = Join-Path $outputDirectory $metadata.IntuneWinFileName
+            if (Test-Path $intunewinFile) {
+                Remove-Item -Path $intunewinFile -Force
+            }
 
-        $outputDirectory = Split-Path $versionDirectory -Parent
-        $intunewinFile = Join-Path $outputDirectory $metadata.IntuneWinFileName
-        if (Test-Path $intunewinFile) {
-            Remove-Item -Path $intunewinFile -Force
+            try {
+                & intunewinapputil -c $versionDirectory -s $installerFile.Name -o $outputDirectory -q
+                if ($LASTEXITCODE -eq 0 -and (Test-Path $intunewinFile)) {
+                    $packagingSucceeded = $true
+                    $intunewinSize = [math]::Round((Get-Item $intunewinFile).Length / 1MB, 2)
+                    Write-WingetterProgress -Step 12 -TotalSteps $totalSteps -StepName 'Complete' -Percent 100 -Message "Created $intunewinFile ($intunewinSize MB)" -Status Completed -OnProgress $OnProgress
+                } else {
+                    throw 'Content Prep Tool failed or output file was not created.'
+                }
+            } catch {
+                Write-WingetterLog -Message "Failed to create IntuneWin package: $_" -Level Warning -OnProgress $OnProgress
+                Write-WingetterFailureLog -LogPath $failureLogPath -Step 'Packaging .intunewin' -ErrorRecord $_
+                Write-WingetterProgress -Step 12 -TotalSteps $totalSteps -StepName 'Complete with warnings' -Percent 100 -Message 'Metadata created, but .intunewin packaging failed.' -Status Completed -OnProgress $OnProgress
+            }
         }
-
-        & intunewinapputil -c $versionDirectory -s $installerFile.Name -o $outputDirectory -q
-        if ($LASTEXITCODE -ne 0 -or -not (Test-Path $intunewinFile)) {
-            throw 'Content Prep Tool failed or output file was not created.'
-        }
-
-        $intunewinSize = [math]::Round((Get-Item $intunewinFile).Length / 1MB, 2)
-        Write-WingetterProgress -Step 12 -TotalSteps $totalSteps -StepName 'Complete' -Percent 100 -Message "Created $intunewinFile ($intunewinSize MB)" -Status Completed -OnProgress $OnProgress
 
         Save-WingetterSettings -OutputPath $OutputPath -LastPackageId $details.PackageId
 
         return [PSCustomObject]@{
             Success = $true
+            PackagingSucceeded = $packagingSucceeded
             PackageId = $details.PackageId
             DisplayName = $details.DisplayName
             Version = $details.Version
             Publisher = $details.Publisher
             VersionDirectory = $versionDirectory
-            IntuneWinFile = $intunewinFile
+            IntuneWinFile = if ($packagingSucceeded) { $intunewinFile } else { $null }
             IconFile = if (Test-Path $iconFilePath) { $iconFilePath } else { $null }
             InstallerFile = $installerFile.FullName
             Metadata = $metadata

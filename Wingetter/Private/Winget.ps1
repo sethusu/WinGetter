@@ -138,12 +138,12 @@ function Get-WingetPackageDetails {
         [string]$Version
     )
 
-    $args = @($PackageId, '--exact')
+    $showArguments = @($PackageId, '--exact')
     if ($Version) {
-        $args += @('--version', $Version)
+        $showArguments += @('--version', $Version)
     }
 
-    $result = Invoke-WingetCli -Command show -Arguments $args
+    $result = Invoke-WingetCli -Command show -Arguments $showArguments
     $appInfo = $result.Output
     $hasAppInfo = $appInfo | Select-String -Pattern 'Found.*\[|Version:\s+|Publisher:\s+' -Quiet
 
@@ -161,9 +161,20 @@ function Get-WingetPackageDetails {
     $homepage = if ($text -match 'Homepage:\s+(.+)') { ($text | Select-String -Pattern 'Homepage:\s+(.+)' | Select-Object -First 1).Matches.Groups[1].Value.Trim() } else { '' }
 
     $description = 'No description available'
-  $descriptionMatch = $text | Select-String -Pattern 'Description:\s+(.+)' -AllMatches
-    if ($descriptionMatch) {
-        $description = $descriptionMatch.Matches[0].Groups[1].Value.Trim()
+    $descriptionLine = $lines | Where-Object { $_ -match '^Description:\s+' } | Select-Object -First 1
+    if ($descriptionLine) {
+        $description = ($descriptionLine -replace '^Description:\s+', '').Trim()
+        $lineIndex = [array]::IndexOf($lines, $descriptionLine)
+        if ($lineIndex -ge 0) {
+            $extraLines = @()
+            for ($i = $lineIndex + 1; $i -lt $lines.Count; $i++) {
+                if ($lines[$i] -match '^(Version|Publisher|Homepage|Installer|License|Tags|Moniker):') { break }
+                if ($lines[$i].Trim()) { $extraLines += $lines[$i].Trim() }
+            }
+            if ($extraLines.Count -gt 0) {
+                $description = ($description + ' ' + ($extraLines -join ' ')).Trim()
+            }
+        }
     }
 
     $installerType = ''

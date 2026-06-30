@@ -1,3 +1,28 @@
+function Get-ImageMimeType {
+    param(
+        [Parameter(Mandatory = $true)]
+        [byte[]]$Bytes
+    )
+
+    if (-not $Bytes -or $Bytes.Length -lt 4) {
+        return $null
+    }
+
+    if ($Bytes[0] -eq 0x89 -and $Bytes[1] -eq 0x50 -and $Bytes[2] -eq 0x4E -and $Bytes[3] -eq 0x47) {
+        return 'image/png'
+    }
+
+    if ($Bytes.Length -ge 3 -and $Bytes[0] -eq 0xFF -and $Bytes[1] -eq 0xD8 -and $Bytes[2] -eq 0xFF) {
+        return 'image/jpeg'
+    }
+
+    if ($Bytes.Length -ge 3 -and $Bytes[0] -eq 0x47 -and $Bytes[1] -eq 0x49 -and $Bytes[2] -eq 0x46) {
+        return 'image/gif'
+    }
+
+    return $null
+}
+
 function Export-IconFromExecutable {
     param(
         [string]$ExePath,
@@ -159,13 +184,12 @@ function Start-WingetInstallerDownload {
 
     $supportsAgreements = Test-WingetPackageAgreementsSupported -Command download
     $job = Start-Job -ScriptBlock {
-        param($pkgId, $dir, $supportsPkgAgreements)
-        if ($supportsPkgAgreements) {
-            winget download $pkgId --exact --download-directory $dir --accept-source-agreements --accept-package-agreements 2>&1
+        if ($using:supportsAgreements) {
+            winget download $using:PackageId --exact --download-directory $using:DownloadDirectory --accept-source-agreements --accept-package-agreements 2>&1
         } else {
-            winget download $pkgId --exact --download-directory $dir --accept-source-agreements 2>&1
+            winget download $using:PackageId --exact --download-directory $using:DownloadDirectory --accept-source-agreements 2>&1
         }
-    } -ArgumentList $PackageId, $DownloadDirectory, $supportsAgreements
+    }
 
     $previousSize = 0
     $previousTime = Get-Date
@@ -180,7 +204,7 @@ function Start-WingetInstallerDownload {
                 ($_.Extension -in '.exe', '.msi', '.msix', '.appx', '')
             }
 
-        $jobOutput = Receive-Job -Job $job -ErrorAction SilentlyContinue
+        $jobOutput = Receive-Job -Job $job -Keep -ErrorAction SilentlyContinue
         if ($jobOutput -and -not $expectedSize) {
             $sizeMatch = $jobOutput | Select-String -Pattern '(\d+\.?\d*)\s*(MB|GB|KB)' | Select-Object -First 1
             if ($sizeMatch) {
@@ -226,7 +250,7 @@ function Start-WingetInstallerDownload {
         if ($job.State -ne 'Running') { break }
     }
 
-    $jobOutput = Receive-Job -Job $job
+    $jobOutput = Receive-Job -Job $job -Keep
     Remove-Job -Job $job -Force
 
     if ($jobOutput) {
