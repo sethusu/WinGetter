@@ -1,0 +1,4 @@
+Name                Id                  Version Source
+--------------------------------------------------------
+Microsoft PowerToys XP89DCGQ3K6VLD      Unknown msstore
+PowerToys (Preview) Microsoft.PowerToys 0.87.0  winget

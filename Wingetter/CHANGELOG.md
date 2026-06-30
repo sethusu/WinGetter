@@ -1,5 +1,22 @@
 # Wingetter Changelog
 
+## Version 1.3 - 2026-06-30
+
+### Reliability Overhaul
+- **WingetSearch module**: Extracted winget search/show parsing into `Modules/WingetSearch.psm1` with column-aware table parsing, truncated ID resolution, and exact package ID fast path
+- **Parser tests**: Added Pester tests and fixtures under `Tests/`; run with `.\Run-Tests.ps1`
+- **Package ID normalization**: Handles winget output with whitespace around dots (for example `Valve. Steam`)
+- **Version-aware downloads**: Passes `--version` to `winget download` when a version is known
+- **Detection script fixes**:
+  - Fixed hashtable sorting bug that caused empty version comparisons (`$_.['DisplayVersion']` instead of `$_.DisplayVersion`)
+  - Relaxed registry name matching so valid installs are not rejected
+  - Improved DisplayName version extraction for 3- and 4-part version strings
+- **Download error handling**: Reduced false positives from overly broad error pattern matching
+- **Logo download**: Skips invalid CDN URLs when org/repo are unknown
+- **Summary output**: Handles missing `.intunewin` file gracefully when Content Prep Tool fails
+
+---
+
 ## Version 1.2 - 2026-01-22
 
 ### New Features
