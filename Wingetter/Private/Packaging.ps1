@@ -6,6 +6,7 @@ function Invoke-WingetterPackaging {
         [string]$Version,
         [string]$OutputPath = (Get-WingetterSettings).OutputPath,
         [string]$IconPath,
+        [switch]$CollectIconCandidates,
         [scriptblock]$OnProgress
     )
 
@@ -64,11 +65,22 @@ function Invoke-WingetterPackaging {
         Write-WingetterProgress -Step 8 -TotalSteps $totalSteps -StepName 'Resolving icon' -Percent 72 -OnProgress $OnProgress
         $iconFilePath = Join-Path $versionDirectory 'icon.png'
         $logoFilePath = Join-Path $appDirectory 'logo.png'
+        $iconCandidates = @()
+        $iconStagingDirectory = Join-Path $versionDirectory '.icon-candidates'
+        $usedCustomIcon = $false
 
         if ($IconPath -and (Test-Path $IconPath)) {
-            Copy-Item -Path $IconPath -Destination $iconFilePath -Force
+            Set-WingetterPackageIconFiles -SourceIconPath $IconPath -LogoFilePath $logoFilePath -IconFilePath $iconFilePath
+            $usedCustomIcon = $true
         } elseif (Test-Path $logoFilePath) {
             Copy-Item -Path $logoFilePath -Destination $iconFilePath -Force
+        } elseif ($CollectIconCandidates) {
+            $iconCandidates = @(Resolve-PackageIconCandidates -PackageId $details.PackageId -DisplayName $details.DisplayName `
+                -Publisher $details.Publisher -Homepage $details.Homepage -Version $details.Version `
+                -InstallerPath $installerFile.FullName -MaximumCount 3 -StagingDirectory $iconStagingDirectory -OnProgress $OnProgress)
+            if ($iconCandidates.Count -gt 0) {
+                Set-WingetterPackageIconFiles -SourceIconPath $iconCandidates[0].Path -LogoFilePath $logoFilePath -IconFilePath $iconFilePath
+            }
         } else {
             $logoDownloaded = Get-PackageLogoFromWeb -PackageId $details.PackageId -DisplayName $details.DisplayName `
                 -Publisher $details.Publisher -Homepage $details.Homepage -Version $details.Version `
@@ -125,6 +137,10 @@ function Invoke-WingetterPackaging {
             VersionDirectory = $versionDirectory
             IntuneWinFile = if ($packagingSucceeded) { $intunewinFile } else { $null }
             IconFile = if (Test-Path $iconFilePath) { $iconFilePath } else { $null }
+            LogoFile = if (Test-Path $logoFilePath) { $logoFilePath } else { $null }
+            IconCandidates = $iconCandidates
+            UsedCustomIcon = $usedCustomIcon
+            IconStagingDirectory = if ($iconCandidates.Count -gt 0) { $iconStagingDirectory } else { $null }
             InstallerFile = $installerFile.FullName
             Metadata = $metadata
             Details = $details

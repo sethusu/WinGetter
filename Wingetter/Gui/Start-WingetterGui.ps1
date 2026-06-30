@@ -179,6 +179,166 @@ function Show-WingetterSearchDialog {
     return $null
 }
 
+function New-WpfBitmapImage {
+    param([string]$ImagePath)
+
+    $bitmap = New-Object System.Windows.Media.Imaging.BitmapImage
+    $bitmap.BeginInit()
+    $bitmap.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
+    $bitmap.UriSource = [Uri]::new((Resolve-Path $ImagePath).Path)
+    $bitmap.EndInit()
+    $bitmap.Freeze()
+    return $bitmap
+}
+
+function Show-WingetterIconPickerDialog {
+    param(
+        [array]$Candidates,
+        [string]$DisplayName,
+        [string]$PackageId,
+        $OwnerWindow
+    )
+
+    if (-not $Candidates -or $Candidates.Count -lt 2) {
+        return $null
+    }
+
+    $dialogPath = Join-Path $PSScriptRoot 'Wingetter.IconPickerDialog.xaml'
+    $dialogWindow = Read-XamlWindow -XamlPath $dialogPath
+    $dialogWindow.Owner = $OwnerWindow
+
+    $summary = $dialogWindow.FindName('IconSummaryText')
+    $panel = $dialogWindow.FindName('CandidatesPanel')
+    $useButton = $dialogWindow.FindName('UseSelectedButton')
+    $keepButton = $dialogWindow.FindName('KeepCurrentButton')
+
+    $summary.Text = "Packaging finished for $DisplayName ($PackageId). Pick the icon that best represents this app for Intune upload."
+
+    $selection = @{
+        Candidate = $Candidates[0]
+    }
+    $firstRadio = $null
+
+    foreach ($candidate in $Candidates) {
+        $card = New-Object System.Windows.Controls.Border
+        $card.Width = 210
+        $card.Margin = New-WpfThickness -Left 6 -Right 6
+        $card.Padding = New-WpfThickness -Left 10 -Top 10 -Right 10 -Bottom 10
+        $card.CornerRadius = New-Object System.Windows.CornerRadius(8)
+        $card.BorderBrush = ConvertTo-WpfBrush '#D8DEE9'
+        $card.BorderThickness = New-WpfThickness -Left 1 -Top 1 -Right 1 -Bottom 1
+        $card.Background = [System.Windows.Media.Brushes]::White
+
+        $stack = New-Object System.Windows.Controls.StackPanel
+        $stack.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Center
+
+        $radio = New-Object System.Windows.Controls.RadioButton
+        $radio.GroupName = 'WingetterIconSelection'
+        $radio.Content = if ($candidate.Label) { $candidate.Label } else { 'Option' }
+        $radio.FontWeight = [System.Windows.FontWeights]::SemiBold
+        $radio.HorizontalAlignment = [System.Windows.HorizontalAlignment]::Center
+        $radio.Margin = New-WpfThickness -Bottom 8
+        $radio.Tag = $candidate
+
+        $capturedCandidate = $candidate
+        $radio.Add_Checked({
+            $selection.Candidate = $capturedCandidate
+        })
+
+        if (-not $firstRadio) {
+            $firstRadio = $radio
+            $selection.Candidate = $candidate
+        }
+
+        $image = New-Object System.Windows.Controls.Image
+        $image.Width = 128
+        $image.Height = 128
+        $image.Stretch = [System.Windows.Media.Stretch]::Uniform
+        $image.Margin = New-WpfThickness -Bottom 8
+        if ($candidate.Path -and (Test-Path $candidate.Path)) {
+            try {
+                $image.Source = New-WpfBitmapImage -ImagePath $candidate.Path
+            } catch {
+                $image.Source = $null
+            }
+        }
+
+        $sourceText = New-Object System.Windows.Controls.TextBlock
+        $sourceText.Text = "Source: $($candidate.Source)"
+        $sourceText.Foreground = ConvertTo-WpfBrush '#5C6B7A'
+        $sourceText.FontSize = 12
+        $sourceText.TextAlignment = [System.Windows.TextAlignment]::Center
+        $sourceText.Margin = New-WpfThickness -Bottom 4
+
+        $urlText = New-Object System.Windows.Controls.TextBlock
+        $urlDisplay = if ($candidate.Url.Length -gt 48) { $candidate.Url.Substring(0, 45) + '...' } else { $candidate.Url }
+        $urlText.Text = $urlDisplay
+        $urlText.Foreground = ConvertTo-WpfBrush '#8A96A3'
+        $urlText.FontSize = 11
+        $urlText.TextWrapping = [System.Windows.TextWrapping]::Wrap
+        $urlText.TextAlignment = [System.Windows.TextAlignment]::Center
+        $urlText.ToolTip = $candidate.Url
+
+        $stack.Children.Add($radio) | Out-Null
+        $stack.Children.Add($image) | Out-Null
+        $stack.Children.Add($sourceText) | Out-Null
+        $stack.Children.Add($urlText) | Out-Null
+        $card.Child = $stack
+        $panel.Children.Add($card) | Out-Null
+    }
+
+    if ($firstRadio) {
+        $firstRadio.IsChecked = $true
+    }
+
+    $useButton.Add_Click({
+        if ($selection.Candidate) {
+            $dialogWindow.Tag = $selection.Candidate
+            $dialogWindow.DialogResult = $true
+            $dialogWindow.Close()
+        }
+    })
+
+    $keepButton.Add_Click({
+        $dialogWindow.Tag = $null
+        $dialogWindow.DialogResult = $false
+        $dialogWindow.Close()
+    })
+
+    if ($dialogWindow.ShowDialog()) {
+        return $dialogWindow.Tag
+    }
+    return $null
+}
+
+function Invoke-PostPackagingIconSelection {
+    param(
+        [object]$Result,
+        $OwnerWindow,
+        $IconPreview,
+        $IconStatus,
+        $LogText
+    )
+
+    if ($Result.UsedCustomIcon) { return $Result }
+    if (-not $Result.IconCandidates -or $Result.IconCandidates.Count -lt 2) { return $Result }
+    if (-not $Result.LogoFile -or -not $Result.IconFile) { return $Result }
+
+    $selected = Show-WingetterIconPickerDialog -Candidates $Result.IconCandidates `
+        -DisplayName $Result.DisplayName -PackageId $Result.PackageId -OwnerWindow $OwnerWindow
+
+    if ($selected) {
+        Set-WingetterPackageIconFiles -SourceIconPath $selected.Path -LogoFilePath $Result.LogoFile -IconFilePath $Result.IconFile
+        $Result.IconFile = $Result.IconFile
+        Set-IconPreview -ImageControl $IconPreview -StatusControl $IconStatus -ImagePath $Result.IconFile
+        Add-LogLine -LogControl $LogText -Message "Applied selected icon from $($selected.Source): $($selected.Url)"
+    } else {
+        Add-LogLine -LogControl $LogText -Message 'Kept the default icon candidate from packaging.'
+    }
+
+    return $Result
+}
+
 function Add-LogLine {
     param(
         $LogControl,
@@ -306,7 +466,7 @@ function Start-WingetterBackgroundPackaging {
     $powershell.Runspace = $runspace
 
     $null = $powershell.AddScript({
-        param($ModulePath, $PackageId, $Version, $OutputPath, $IconPath, $Queue)
+        param($ModulePath, $PackageId, $Version, $OutputPath, $IconPath, $CollectIconCandidates, $Queue)
         Import-Module $ModulePath -Force
         $onProgress = {
             param($Event)
@@ -319,12 +479,14 @@ function Start-WingetterBackgroundPackaging {
         }
         if ($Version) { $params.Version = $Version }
         if ($IconPath) { $params.IconPath = $IconPath }
+        if ($CollectIconCandidates) { $params.CollectIconCandidates = $true }
         Invoke-WingetterPackaging @params
     }).AddArgument($modulePath).
       AddArgument($PackArguments.PackageId).
       AddArgument($PackArguments.Version).
       AddArgument($PackArguments.OutputPath).
       AddArgument($PackArguments.IconPath).
+      AddArgument([bool]$PackArguments.CollectIconCandidates).
       AddArgument($ProgressQueue)
 
     return @{
@@ -621,6 +783,9 @@ function Complete-WingetterPackaging {
 
     $script:lastOutputDirectory = $Result.VersionDirectory
     $openOutputButton.IsEnabled = $true
+
+    $Result = Invoke-PostPackagingIconSelection -Result $Result -OwnerWindow $window `
+        -IconPreview $iconPreview -IconStatus $iconStatus -LogText $logText
     Set-IconPreview -ImageControl $iconPreview -StatusControl $iconStatus -ImagePath $Result.IconFile
 
     if ($Result.PackagingSucceeded) {
@@ -676,6 +841,7 @@ function Start-WingetterPackagingFromUi {
         Version = $packageVersion
         OutputPath = $outputPath
         IconPath = $script:customIconPath
+        CollectIconCandidates = $true
     }
 
     $script:progressQueue = New-Object System.Collections.Concurrent.ConcurrentQueue[object]
