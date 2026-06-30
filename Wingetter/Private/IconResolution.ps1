@@ -1,3 +1,54 @@
+function Get-WingetterWebUserAgent {
+    return 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Wingetter/1.0'
+}
+
+function Get-SiteRootIconUrls {
+    param([string]$Url)
+
+    if ([string]::IsNullOrWhiteSpace($Url)) { return @() }
+
+    try {
+        $uri = [Uri]$Url
+        $root = "$($uri.Scheme)://$($uri.Host)"
+        return @(
+            "$root/favicon.ico"
+            "$root/favicon.png"
+            "$root/apple-touch-icon.png"
+        )
+    } catch {
+        return @()
+    }
+}
+
+function Get-IconBytesFromUrl {
+    param(
+        [string]$Url,
+        [int]$TimeoutSec = 15
+    )
+
+    $tempFile = [System.IO.Path]::ChangeExtension([System.IO.Path]::GetTempFileName(), '.icon')
+    try {
+        if ([Net.ServicePointManager]::SecurityProtocol -band [Net.SecurityProtocolType]::Tls12 -eq 0) {
+            [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+        }
+
+        $client = New-Object System.Net.WebClient
+        $client.Headers.Add('User-Agent', (Get-WingetterWebUserAgent))
+        $client.DownloadFile($Url, $tempFile)
+
+        if (-not (Test-Path $tempFile)) { return $null }
+        $bytes = [System.IO.File]::ReadAllBytes($tempFile)
+        if ($bytes.Length -lt 4) { return $null }
+        return $bytes
+    } catch {
+        return $null
+    } finally {
+        if (Test-Path $tempFile) {
+            Remove-Item $tempFile -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 function Resolve-AbsoluteUrl {
     param(
         [string]$BaseUrl,
@@ -44,12 +95,26 @@ function Save-BytesAsPngIcon {
 
         if ($Bytes[0] -eq 0x00 -and $Bytes[1] -eq 0x00) {
             Add-Type -AssemblyName System.Drawing -ErrorAction Stop
-            $icon = New-Object System.Drawing.Icon($tempFile)
-            $bitmap = $icon.ToBitmap()
-            $bitmap.Save($OutputPath, [System.Drawing.Imaging.ImageFormat]::Png)
-            $icon.Dispose()
-            $bitmap.Dispose()
-            return (Test-Path $OutputPath)
+            $iconStream = [System.IO.File]::OpenRead($tempFile)
+            try {
+                $icon = New-Object System.Drawing.Icon($iconStream, 256, 256)
+                $bitmap = $icon.ToBitmap()
+                $bitmap.Save($OutputPath, [System.Drawing.Imaging.ImageFormat]::Png)
+                $icon.Dispose()
+                $bitmap.Dispose()
+                return (Test-Path $OutputPath)
+            } catch {
+                $iconStream.Dispose()
+                $iconStream = [System.IO.File]::OpenRead($tempFile)
+                $icon = New-Object System.Drawing.Icon($iconStream)
+                $bitmap = $icon.ToBitmap()
+                $bitmap.Save($OutputPath, [System.Drawing.Imaging.ImageFormat]::Png)
+                $icon.Dispose()
+                $bitmap.Dispose()
+                return (Test-Path $OutputPath)
+            } finally {
+                if ($iconStream) { $iconStream.Dispose() }
+            }
         }
 
         Add-Type -AssemblyName System.Drawing -ErrorAction Stop
@@ -78,10 +143,9 @@ function Save-PackageIconFromUrl {
 
     try {
         Write-WingetterLog -Message "Trying icon URL: $Url" -Level Info -OnProgress $OnProgress
-        $response = Invoke-WebRequest -Uri $Url -UseBasicParsing -TimeoutSec 12 -ErrorAction Stop
-        $bytes = $response.Content
-        if ($bytes -is [string]) {
-            $bytes = [System.Text.Encoding]::GetEncoding('ISO-8859-1').GetBytes($bytes)
+        $bytes = Get-IconBytesFromUrl -Url $Url
+        if (-not $bytes) {
+            throw 'Download returned no data'
         }
 
         if (Save-BytesAsPngIcon -Bytes $bytes -OutputPath $OutputPath) {
@@ -148,7 +212,9 @@ function Get-IconUrlsFromWingetManifest {
     $urls = @()
     foreach ($manifestUrl in $manifestPaths) {
         try {
-            $yaml = (Invoke-WebRequest -Uri $manifestUrl -UseBasicParsing -TimeoutSec 10).Content
+            $client = New-Object System.Net.WebClient
+            $client.Headers.Add('User-Agent', (Get-WingetterWebUserAgent))
+            $yaml = $client.DownloadString($manifestUrl)
             if ($yaml -match '(?m)^PackageUrl:\s*(.+)$') {
                 $packageUrl = $matches[1].Trim()
                 $urls += Get-IconUrlsFromHomepage -Homepage $packageUrl
@@ -173,6 +239,7 @@ function Get-IconUrlsFromHomepage {
     if ([string]::IsNullOrWhiteSpace($Homepage)) { return @() }
 
     $urls = @()
+    $urls += Get-SiteRootIconUrls -Url $Homepage
     $base = $Homepage.TrimEnd('/')
 
     $urls += @(
@@ -187,8 +254,9 @@ function Get-IconUrlsFromHomepage {
     )
 
     try {
-        $response = Invoke-WebRequest -Uri $Homepage -UseBasicParsing -TimeoutSec 12 -ErrorAction Stop
-        $html = $response.Content
+        $client = New-Object System.Net.WebClient
+        $client.Headers.Add('User-Agent', (Get-WingetterWebUserAgent))
+        $html = $client.DownloadString($Homepage)
 
         foreach ($pattern in @(
             '(?i)<link[^>]+rel=["'']apple-touch-icon[^>]+href=["'']([^"'']+)["'']'
@@ -394,10 +462,13 @@ function Resolve-PackageIcon {
     )
 
     $candidateUrls = @()
+    # Known-good publisher URLs first (most reliable for common apps like Steam)
+    $candidateUrls += Get-KnownPackageIconUrls -PackageId $PackageId -Publisher $Publisher -Homepage $Homepage
     $candidateUrls += Get-IconUrlsFromWingetShow -PackageId $PackageId -Version $Version
     $candidateUrls += Get-IconUrlsFromWingetManifest -PackageId $PackageId -Version $Version
-    $candidateUrls += Get-IconUrlsFromHomepage -Homepage $Homepage
-    $candidateUrls += Get-KnownPackageIconUrls -PackageId $PackageId -Publisher $Publisher -Homepage $Homepage
+    if ($Homepage) {
+        $candidateUrls += Get-IconUrlsFromHomepage -Homepage $Homepage
+    }
     $candidateUrls += Get-HeuristicIconUrls -PackageId $PackageId -DisplayName $DisplayName -Publisher $Publisher -Homepage $Homepage
 
     $candidateUrls = $candidateUrls | Where-Object { $_ -and $_ -match '^https?://' } | Select-Object -Unique
