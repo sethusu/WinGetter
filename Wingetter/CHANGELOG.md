@@ -1,5 +1,29 @@
 # Wingetter Changelog
 
+## Version 2.0 - 2026-06-30
+
+### New Features
+- **WPF Graphical User Interface** (`Start-WingetterGui.ps1`)
+  - Winget search with live results
+  - Radio-button package selection
+  - Output destination folder picker
+  - Optional version override and custom icon path
+  - Live progress bar and activity log
+  - Icon preview panel
+  - Open output folder button after packaging
+  - Prerequisite status indicator (Winget + Content Prep Tool)
+- **Wingetter.Core PowerShell Module** — modular packaging engine reusable by CLI and GUI
+- **install.ps1** — Intune Win32 install script with transcript logging, silent flags, and return code handling
+- **README.md** — comprehensive Markdown documentation with every Intune upload field
+- **packaging.log** — full packaging run log
+- **packaging-error.log** — detailed error log written when packaging fails
+
+### Enhancements
+- Install/uninstall Intune commands now use PowerShell wrappers (`install.ps1` / `uninstall.ps1`) for consistent IME logging
+- Improved detection.ps1 and uninstall.ps1 with Intune best practices
+- CLI script refactored to thin wrapper around Wingetter.Core module
+- Added `-UseGui` switch to `Create-IntuneWinFromWinget.ps1`
+
 ## Version 1.2 - 2026-01-22
 
 ### New Features
