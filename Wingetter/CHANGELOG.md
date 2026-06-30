@@ -1,5 +1,19 @@
 # Wingetter Changelog
 
+## Version 1.3 - 2026-06-30
+
+### New Features
+- **WPF Graphical Interface** (`Start-WingetterGui.ps1`): Full GUI with Winget search, radio-button package selection, output destination picker, live progress bar, activity log, and icon preview
+- **install.ps1**: Intune Win32 install wrapper with transcript logging, `$PSScriptRoot` handling, and standard return codes
+- **README.md**: Markdown upload reference with every Intune field (display name, developer, version, commands, return codes, log paths)
+- **wingetter-pack.log**: Failure log written to the output folder when packaging fails
+- **Shared core module** (`Wingetter.Core.ps1`): Packaging engine used by both GUI and CLI
+
+### Changes
+- Install/uninstall commands in metadata now invoke `install.ps1` / `uninstall.ps1` via sysnative PowerShell (Intune best practice)
+- Running `Create-IntuneWinFromWinget.ps1` without parameters launches the GUI instead of a basic InputBox
+- CLI mode unchanged with `-AppName` or `-NoGui`
+
 ## Version 1.2 - 2026-01-22
 
 ### New Features

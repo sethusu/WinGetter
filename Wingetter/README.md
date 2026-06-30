@@ -4,17 +4,18 @@ This tool automates the creation of IntuneWin packages from Winget applications 
 
 ## Features
 
-- ✅ Interactive input dialog for Winget Package ID
+- ✅ **WPF graphical interface** with Winget search, radio-button package selection, output path picker, live progress bar, activity log, and icon preview
+- ✅ Interactive CLI mode with `-AppName` or legacy InputBox fallback
 - ✅ Automatic Winget search and download
-- ✅ Registry-based detection script (no Winget dependency)
-- ✅ Automatic uninstall script generation
+- ✅ **install.ps1**, **detection.ps1**, and **uninstall.ps1** following Intune Win32 best practices (transcript logging, exit codes, `$PSScriptRoot`)
+- ✅ Registry-based detection script (no Winget dependency at deploy time)
 - ✅ Content Prep Tool integration
-- ✅ Complete metadata file generation (app.json, win32LobApp.json)
+- ✅ Complete metadata file generation (`app.json`, `win32LobApp.json`)
+- ✅ **README.md** with every Intune upload field in Markdown (display name, developer, version, commands, return codes, log paths)
+- ✅ **wingetter-pack.log** written on packaging failure
 - ✅ Enhanced automatic logo download (JetBrains, GitHub projects, homepage URLs, and more)
-- ✅ Icon file handling
-- ✅ Proper installer filename handling
+- ✅ Icon file handling with GUI preview
 - ✅ Smart version detection (handles build numbers vs marketing versions)
-- ✅ Version included in readme.txt
 
 ## Prerequisites
 
@@ -24,15 +25,27 @@ This tool automates the creation of IntuneWin packages from Winget applications 
 
 ## Usage
 
-### Interactive Mode (Recommended)
+### Graphical Interface (Recommended)
 
-Simply run the script without parameters to open an input dialog:
+Run without parameters to open the Wingetter GUI:
 
 ```powershell
 .\Create-IntuneWinFromWinget.ps1
 ```
 
-A dialog box will appear prompting you to enter the Winget Package ID.
+Or launch the GUI directly:
+
+```powershell
+.\Start-WingetterGui.ps1
+```
+
+The GUI provides:
+
+- Winget search with **radio-button package selection**
+- **Output destination** folder picker
+- Optional version override and custom icon with **live preview**
+- **Live progress tracker** and scrollable activity log
+- One-click open of the output folder when complete
 
 ### Command Line Usage
 
@@ -77,30 +90,36 @@ A dialog box will appear prompting you to enter the Winget Package ID.
 
 1. **Searches Winget** for the specified application
 2. **Downloads** the installer with proper filename
-3. **Creates detection.ps1** - Registry-based detection script
-4. **Creates uninstall.ps1** - Uninstall script that finds and executes the uninstaller
-5. **Handles icon files** - Copies icon to package directory
-6. **Creates metadata files**:
-   - `readme.txt` - Documentation
+3. **Creates install.ps1** - Intune install wrapper with logging and exit-code handling
+4. **Creates detection.ps1** - Registry-based detection script
+5. **Creates uninstall.ps1** - Uninstall script that finds and executes the uninstaller
+6. **Handles icon files** - Copies or downloads icon to package directory
+7. **Creates metadata files**:
+   - `README.md` - Full Intune upload reference (Markdown)
+   - `readme.txt` - Quick reference
    - `app.json` - Application metadata
    - `win32LobApp.json` - Intune app definition with detection script
-7. **Packages with Content Prep Tool** - Creates the final `.intunewin` file
+   - `wingetter-pack.log` - Failure log (only when packaging fails)
+8. **Packages with Content Prep Tool** - Creates the final `.intunewin` file
 
 ## Output Structure
 
 ```
 {OutputPath}/
 └── {PackageId}/
-    ├── logo.png (optional, if exists)
+    ├── logo.png (optional, if auto-downloaded)
+    ├── {InstallerFileName}.intunewin
     └── {Version}/
         ├── {InstallerFileName}.exe
+        ├── install.ps1
         ├── detection.ps1
         ├── uninstall.ps1
         ├── app.json
         ├── win32LobApp.json
+        ├── README.md
         ├── readme.txt
         ├── icon.png
-        └── {InstallerFileName}.intunewin (created in parent directory)
+        └── wingetter-pack.log (on failure only)
 ```
 
 ## Detection Script

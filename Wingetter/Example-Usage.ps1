@@ -1,7 +1,12 @@
 # Example usage script for Wingetter
-# This file demonstrates various ways to use the Create-IntuneWinFromWinget.ps1 script
+# This file demonstrates various ways to use Wingetter
 
-# Example 1: Basic usage with app name
+# Example 0: Launch the graphical interface (recommended)
+Write-Host "Example 0: Graphical interface" -ForegroundColor Cyan
+# .\Create-IntuneWinFromWinget.ps1
+# .\Start-WingetterGui.ps1
+
+# Example 1: Basic CLI usage with app name
 Write-Host "Example 1: Basic usage" -ForegroundColor Cyan
 .\Create-IntuneWinFromWinget.ps1 -AppName "MaximaTeam.Maxima"
 
