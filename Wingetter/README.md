@@ -16,6 +16,9 @@ This tool automates the creation of IntuneWin packages from Winget applications 
 - ✅ Smart version detection (handles build numbers vs marketing versions)
 - ✅ Version included in readme.txt
 
+- ✅ Robust winget search parsing (table columns, truncated IDs, MS Store rows)
+- ✅ Pester test suite for winget parser (`.\Run-Tests.ps1`)
+
 ## Prerequisites
 
 1. **Winget** - Windows Package Manager must be installed
@@ -145,13 +148,30 @@ The uninstall script:
 .\Create-IntuneWinFromWinget.ps1 -AppName "7zip.7zip" -Version "23.01"
 ```
 
+## Testing
+
+Run the winget parser unit tests (requires Pester 5+):
+
+```powershell
+cd Wingetter
+.\Run-Tests.ps1
+```
+
 ## Troubleshooting
+
+### "No packages found" or search parsing issues
+- Try the exact package ID (for example `Google.Chrome` instead of `chrome`)
+- Wingetter saves diagnostic search output when parsing fails; check `%TEMP%\Wingetter\`
+- Run `.\Run-Tests.ps1` to verify parser behavior on your machine
+- For truncated IDs in search results (ending with `…`), re-run with the full package ID
 
 ### "Winget search failed" or "Error reading input in prompt"
 - Ensure Winget is installed: `winget --version`
 - Check if the app name is correct
-- Try using the exact package ID instead of search term
-- The script automatically accepts source and package agreements. If you see prompt errors, ensure you're running the latest version of Winget that supports `--accept-package-agreements`
+- Try using the exact package ID instead of search term (for example `Google.Chrome` instead of `chrome`)
+- Wingetter now uses a dedicated search module with column-aware parsing, exact ID lookup, and optional `Microsoft.WinGet.Client` integration for more reliable results
+- If you see a truncated package ID ending in `…`, rerun with the exact package ID
+- The script automatically accepts source and package agreements and runs winget with `--disable-interactivity`. If you see prompt errors, ensure you're running a recent Winget build that supports `--accept-package-agreements`
 
 ### "intunewinapputil not found"
 - Install Microsoft Win32 Content Prep Tool
@@ -193,13 +213,30 @@ The uninstall script:
 
 ## Recent Improvements
 
-### Version 1.1 (2026-01-22)
+### Version 1.3 (2026-06-30)
+- ✅ Refactored winget search into `Modules/WingetSearch.psm1` for testability and reuse
+- ✅ Added column-aware parsing for winget search tables (handles truncated IDs, MS Store packages, and multi-word names)
+- ✅ Added exact package ID lookup via `winget show --exact` before broad search
+- ✅ Added optional `Microsoft.WinGet.Client` integration when the module is installed
+- ✅ Added relevance sorting to prioritize exact ID matches and `winget` source packages over `msstore`
+- ✅ Added Pester tests with fixture-based coverage for common search output formats
+
+### Version 1.2 (2026-01-22)
 - ✅ Added automatic logo download for JetBrains products
 - ✅ Added version extraction from DisplayName for JetBrains products (handles build numbers)
 - ✅ Fixed hashtable property access in detection scripts
 - ✅ Added version field to readme.txt
 - ✅ Improved version sorting logic for multiple installations
 - ✅ Enhanced error handling in detection scripts
+
+## Testing
+
+Run the winget search unit tests with Pester:
+
+```powershell
+Install-Module Pester -MinimumVersion 5.0 -Scope CurrentUser
+Invoke-Pester -Path .\Tests\WingetSearch.Tests.ps1
+```
 
 ## License
 
