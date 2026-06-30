@@ -147,11 +147,13 @@ The uninstall script:
 
 ## Troubleshooting
 
-### "Winget search failed" or "Error reading input in prompt"
+### "Winget search failed" or "No packages found"
 - Ensure Winget is installed: `winget --version`
 - Check if the app name is correct
-- Try using the exact package ID instead of search term
+- Try using the exact package ID instead of search term (for example `Google.Chrome`)
 - The script automatically accepts source and package agreements. If you see prompt errors, ensure you're running the latest version of Winget that supports `--accept-package-agreements`
+- For truncated IDs in search results, re-run with the exact package ID or install `Microsoft.WinGet.Client` for structured search results
+- Run the parser tests locally: `.\Run-Tests.ps1`
 
 ### "intunewinapputil not found"
 - Install Microsoft Win32 Content Prep Tool
@@ -192,6 +194,11 @@ The uninstall script:
 - **Version in Readme**: The readme.txt file now includes a dedicated "Version:" line for easy reference.
 
 ## Recent Improvements
+
+### Version 1.3 (2026-06-30)
+- Extracted winget search parsing into `Modules/WingetSearch.psm1` with column-aware table parsing
+- Added Pester tests under `Tests/` (run with `.\Run-Tests.ps1`)
+- Fixed detection-script matching and packaging summary bugs
 
 ### Version 1.1 (2026-01-22)
 - ✅ Added automatic logo download for JetBrains products

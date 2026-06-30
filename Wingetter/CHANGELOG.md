@@ -1,5 +1,29 @@
 # Wingetter Changelog
 
+## Version 1.3 - 2026-06-30
+
+### Improvements
+- **Robust Winget Search**: Extracted search logic into `Modules/WingetSearch.psm1`
+  - Column-aware table parsing instead of fragile regex-only parsing
+  - Exact package ID resolution via `winget show --exact` before broad search
+  - Optional structured search through `Microsoft.WinGet.Client` when installed
+  - Truncated ID detection and resolution via `winget show`
+  - Package ID normalization for winget output with rendered whitespace (e.g. `Valve. Steam`)
+  - Relevance sorting that prefers exact ID matches and `winget` source packages
+  - MS Store package support (IDs without dots)
+- **Automated Tests**: Added Pester tests and fixture files under `Tests/`
+
+### Bug Fixes
+- Renamed custom `Write-Error` helper to `Write-StepError` so it no longer shadows the built-in cmdlet
+- Relaxed detection-script registry matching that incorrectly required the first word of the display name
+- Summary no longer references an undefined `.intunewin` path when Content Prep Tool packaging fails
+
+### Changes
+- `Create-IntuneWinFromWinget.ps1` now imports `WingetSearch.psm1` instead of embedding search parsing inline
+- Winget commands now use `--disable-interactivity` consistently
+
+---
+
 ## Version 1.2 - 2026-01-22
 
 ### New Features
