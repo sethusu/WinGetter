@@ -41,6 +41,9 @@ param(
 # Error handling
 $ErrorActionPreference = "Stop"
 
+$scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+Import-Module (Join-Path $scriptRoot 'Modules' 'WingetSearch.psm1') -Force
+
 # Function to show input dialog for Winget ID
 function Get-WingetIdFromDialog {
     # Add VisualBasic assembly for InputBox
@@ -58,200 +61,6 @@ function Get-WingetIdFromDialog {
     }
     
     return $result.Trim()
-}
-
-# Function to parse winget search results and show selection dialog
-function Select-WingetPackage {
-    param(
-        [Parameter(Mandatory=$true)]
-        $SearchOutput
-    )
-    
-    # Convert to array if it's a string
-    if ($SearchOutput -is [string]) {
-        $SearchOutput = $SearchOutput -split "`n" | ForEach-Object { $_.TrimEnd("`r") }
-    } elseif ($SearchOutput -isnot [array]) {
-        $SearchOutput = @($SearchOutput)
-    }
-    
-    # Parse the search results
-    $packages = @()
-    $inTable = $false
-    $headerLineIndex = -1
-    
-    # Find the header line
-    for ($i = 0; $i -lt $SearchOutput.Count; $i++) {
-        if ($SearchOutput[$i] -match "Name\s+Id\s+Version") {
-            $headerLineIndex = $i
-            $inTable = $true
-            break
-        }
-    }
-    
-    if ($headerLineIndex -eq -1) {
-        # Try alternative header format
-        for ($i = 0; $i -lt $SearchOutput.Count; $i++) {
-            if ($SearchOutput[$i] -match "Found.*\[") {
-                # Single result format: "Found PackageName [PackageId]"
-                $line = $SearchOutput[$i]
-                if ($line -match "Found\s+(.+?)\s+\[(.+?)\]") {
-                    $name = $matches[1].Trim()
-                    $id = $matches[2].Trim()
-                    # Try to find version in subsequent lines
-                    $version = "Unknown"
-                    for ($j = $i + 1; $j -lt [Math]::Min($i + 10, $SearchOutput.Count); $j++) {
-                        if ($SearchOutput[$j] -match "Version:\s+(.+)") {
-                            $version = $matches[1].Trim()
-                            break
-                        }
-                    }
-                    $packages += [PSCustomObject]@{
-                        Name = $name
-                        Id = $id
-                        Version = $version
-                    }
-                    return $packages[0]
-                }
-            }
-        }
-        return $null
-    }
-    
-    # Parse table rows starting after the header
-    $skipNextLine = $false
-    for ($i = $headerLineIndex + 1; $i -lt $SearchOutput.Count; $i++) {
-        $line = $SearchOutput[$i]
-        
-        # Skip separator lines (dashes) - these come right after the header
-        if ($line -match "^-+$") {
-            $skipNextLine = $false
-            continue
-        }
-        
-        # Skip empty lines at the start
-        if ($line.Trim() -eq "" -and $packages.Count -eq 0) {
-            continue
-        }
-        
-        # If we hit an empty line after finding packages, we might be done
-        if ($line.Trim() -eq "" -and $packages.Count -gt 0) {
-            # Check if there are more non-empty lines after this
-            $moreData = $false
-            for ($j = $i + 1; $j -lt [Math]::Min($i + 3, $SearchOutput.Count); $j++) {
-                if ($SearchOutput[$j].Trim() -ne "" -and $SearchOutput[$j] -notmatch "^-+$" -and $SearchOutput[$j] -notmatch "█|▒|KB|MB|%") {
-                    $moreData = $true
-                    break
-                }
-            }
-            if (-not $moreData) {
-                break
-            }
-        }
-        
-        # Skip lines that look like progress bars or other non-data lines
-        if ($line -match "█|▒|KB|MB|%" -or ($line.Length -lt 10 -and $line.Trim() -ne "")) {
-            continue
-        }
-        
-        # Skip lines that are just dashes or special characters
-        if ($line -match "^-+$" -or $line -match "^[-\s\|\\/]+$") {
-            continue
-        }
-        
-        # Parse table rows - winget uses variable-width columns with multiple spaces
-        # The format is: Name (spaces) Id (spaces) Version (spaces) Match (spaces) Source
-        # We need to extract the first 3 columns
-        
-        # Try a more robust parsing approach
-        # Look for pattern: text, then 2+ spaces, then text with dots (package ID), then 2+ spaces, then version
-        # Make the regex more flexible to handle various formats
-        if ($line -match "^\s*(.+?)\s{2,}([A-Za-z0-9][A-Za-z0-9.]*[A-Za-z0-9]|[A-Za-z0-9]+)\s{2,}([0-9][0-9A-Za-z.-]*[0-9A-Za-z]|[0-9]+)") {
-            $name = $matches[1].Trim()
-            $id = $matches[2].Trim()
-            $version = $matches[3].Trim()
-            
-            # Additional validation - ID should contain a dot (package format: Publisher.Package)
-            if ($name.Length -gt 0 -and $id.Length -gt 2 -and $id -match '\.' -and $version.Length -gt 0) {
-                $packages += [PSCustomObject]@{
-                    Name = $name
-                    Id = $id
-                    Version = $version
-                }
-                continue
-            }
-        }
-        
-        # Fallback: Try splitting on 2+ spaces (more reliable for fixed-width tables)
-        $parts = $line -split '\s{2,}', [System.StringSplitOptions]::RemoveEmptyEntries
-        
-        if ($parts.Count -ge 3) {
-            $name = $parts[0].Trim()
-            $id = $parts[1].Trim()
-            $version = $parts[2].Trim()
-            
-            # Validate that we have reasonable values
-            # ID should contain a dot (package format: Publisher.Package)
-            # Version should look like a version number
-            if ($name.Length -gt 0 -and 
-                $id.Length -gt 2 -and $id -match '\.' -and
-                $version.Length -gt 0 -and $version -match '^[0-9A-Za-z.-]+$') {
-                $packages += [PSCustomObject]@{
-                    Name = $name
-                    Id = $id
-                    Version = $version
-                }
-            }
-        }
-    }
-    
-    # If no packages found, return null
-    if ($packages.Count -eq 0) {
-        return $null
-    }
-    
-    # If only one package, return it
-    if ($packages.Count -eq 1) {
-        Write-Host "`nFound 1 matching package:" -ForegroundColor Green
-        Write-Host "  1. $($packages[0].Name) ($($packages[0].Id)) - Version: $($packages[0].Version)" -ForegroundColor Cyan
-        return $packages[0]
-    }
-    
-    # Display numbered list
-    Write-Host "`nFound $($packages.Count) matching packages:" -ForegroundColor Green
-    for ($i = 0; $i -lt $packages.Count; $i++) {
-        $num = $i + 1
-        Write-Host "  $num. $($packages[$i].Name) ($($packages[$i].Id)) - Version: $($packages[$i].Version)" -ForegroundColor Cyan
-    }
-    
-    # Create selection dialog
-    Add-Type -AssemblyName Microsoft.VisualBasic
-    
-    $title = "Wingetter - Select Package"
-    $prompt = "Multiple packages found. Please select one by entering the number:`n`n"
-    for ($i = 0; $i -lt $packages.Count; $i++) {
-        $num = $i + 1
-        $prompt += "$num. $($packages[$i].Name)`n   ID: $($packages[$i].Id)`n   Version: $($packages[$i].Version)`n`n"
-    }
-    $prompt += "Enter number (1-$($packages.Count)):"
-    
-    $selectedNumber = [Microsoft.VisualBasic.Interaction]::InputBox($prompt, $title, "1")
-    
-    if ([string]::IsNullOrWhiteSpace($selectedNumber)) {
-        Write-Host "No selection made. Exiting." -ForegroundColor Red
-        exit 1
-    }
-    
-    $parsedNumber = 0
-    $isValid = [int]::TryParse($selectedNumber.Trim(), [ref]$parsedNumber)
-    if (-not $isValid -or $parsedNumber -lt 1 -or $parsedNumber -gt $packages.Count) {
-        Write-Host "Invalid selection: $selectedNumber. Exiting." -ForegroundColor Red
-        exit 1
-    }
-    
-    $selectedPackage = $packages[$parsedNumber - 1]
-    Write-Host "`nSelected: $($selectedPackage.Name) ($($selectedPackage.Id))" -ForegroundColor Green
-    
-    return $selectedPackage
 }
 
 # Prompt for AppName if not provided
@@ -656,128 +465,86 @@ function Start-WingetDownloadWithProgress {
 # Step 1: Search Winget for the application
 Write-Step "Step 1: Searching Winget for application"
 try {
-    # Check if --accept-package-agreements is supported (newer Winget versions)
-    $testCommand = winget search --help 2>&1 | Select-String -Pattern "accept-package-agreements" -Quiet
-    $supportsPackageAgreements = $testCommand
-    
-    # Search for the application (without --exact to get multiple results)
-    if ($supportsPackageAgreements) {
-        $searchResult = winget search $AppName --accept-source-agreements --accept-package-agreements 2>&1
-    } else {
-        $searchResult = winget search $AppName --accept-source-agreements 2>&1
+    $searchPackages = Search-WingetPackages -Query $AppName -PreferWingetSource
+
+    if (-not $searchPackages -or $searchPackages.Count -eq 0) {
+        $rawSearchOutput = Invoke-WingetSearchCommand -Query $AppName
+        Write-Host "Winget search output:" -ForegroundColor Yellow
+        Write-Host $rawSearchOutput
+        throw "No packages found for '$AppName'. Try the exact package ID (for example Google.Chrome) or a more specific search term."
     }
-    $searchExitCode = $LASTEXITCODE
-    
-    # Check if search was successful - sometimes winget returns non-zero but still has results
-    $hasResults = $searchResult | Select-String -Pattern "Name\s+Id\s+Version|Found.*\[" -Quiet
-    if ($searchExitCode -ne 0) {
-        # Check if we got useful output despite the error code
-        if (-not $hasResults) {
-            Write-Host "Winget search output:" -ForegroundColor Yellow
-            Write-Host $searchResult
-            throw "Winget search failed with exit code $searchExitCode. Is Winget installed? Check output above."
-        } else {
-            Write-Host "Note: Winget returned exit code $searchExitCode but found results. Continuing..." -ForegroundColor Yellow
-        }
-    }
-    
-    Write-Host $searchResult
-    
-    # Parse search results and let user select
-    $selectedPackage = Select-WingetPackage -SearchOutput $searchResult
-    
+
+    $selectedPackage = Select-WingetPackage -SearchOutput $searchPackages -Query $AppName
+
     if (-not $selectedPackage) {
-        throw "No packages found or could not parse search results"
+        throw "No packages found or could not parse search results for '$AppName'"
     }
-    
-    # Use selected package ID
+
+    if ($selectedPackage.TruncatedId) {
+        throw "Package ID '$($selectedPackage.Id)' appears truncated. Re-run with the exact package ID or install Microsoft.WinGet.Client for structured search results."
+    }
+
     $packageId = $selectedPackage.Id
     $selectedVersion = $selectedPackage.Version
-    
-    # If user specified a version, use it; otherwise use the version from search results
+
     if ($Version) {
         $foundVersion = $Version
     } else {
         $foundVersion = $selectedVersion
     }
-    
-    # Get app details using the selected package ID
-    if ($Version) {
-        if ($supportsPackageAgreements) {
-            $appInfo = winget show $packageId --exact --version $Version --accept-source-agreements --accept-package-agreements 2>&1
-        } else {
-            $appInfo = winget show $packageId --exact --version $Version --accept-source-agreements 2>&1
-        }
-        $showExitCode = $LASTEXITCODE
-    } else {
-        if ($supportsPackageAgreements) {
-            $appInfo = winget show $packageId --exact --accept-source-agreements --accept-package-agreements 2>&1
-        } else {
-            $appInfo = winget show $packageId --exact --accept-source-agreements 2>&1
-        }
-        $showExitCode = $LASTEXITCODE
+
+    $packageDetails = Get-WingetPackageDetails -PackageId $packageId -Version $Version
+    if (-not $packageDetails.Package) {
+        throw "Failed to get app information from Winget for package ID '$packageId'."
     }
-    
-    # Check if show command was successful - sometimes winget returns non-zero but still has info
-    $hasAppInfo = $appInfo | Select-String -Pattern "Found.*\[|Version:\s+|Publisher:\s+" -Quiet
-    if ($showExitCode -ne 0) {
-        # Check if we got useful output despite the error code
-        if (-not $hasAppInfo) {
-            Write-Host "Winget show output:" -ForegroundColor Yellow
-            Write-Host $appInfo
-            throw "Failed to get app information from Winget (exit code: $showExitCode). Check output above."
-        } else {
-            Write-Host "Note: Winget returned exit code $showExitCode but found app info. Continuing..." -ForegroundColor Yellow
-        }
+
+    $showPackage = $packageDetails.Package
+    $appInfoLines = @($packageDetails.RawOutput)
+
+    Write-Host $appInfoLines
+
+    if ($showPackage.Id) {
+        $packageId = $showPackage.Id
     }
-    
-    Write-Host $appInfo
-    
-    # Extract package details from output (in case version differs)
-    $extractedPackageId = ($appInfo | Select-String -Pattern "Found (.+?) \[(.+?)\]" | ForEach-Object { $_.Matches.Groups[2].Value })
-    if ($extractedPackageId) {
-        $packageId = $extractedPackageId
+
+    if ($showPackage.Version -and $showPackage.Version -ne 'Unknown') {
+        $foundVersion = $showPackage.Version
     }
-    
-    $extractedVersion = ($appInfo | Select-String -Pattern "Version:\s+(.+)" | ForEach-Object { $_.Matches.Groups[1].Value.Trim() })
-    if ($extractedVersion) {
-        $foundVersion = $extractedVersion
-    }
-    
-    if (-not $foundVersion) {
+
+    if (-not $foundVersion -or $foundVersion -eq 'Unknown') {
         throw "Could not determine version from Winget output"
     }
-    
+
     if ($Version -and $foundVersion -ne $Version) {
         Write-Error "Requested version $Version does not match found version $foundVersion"
         $foundVersion = $Version
     }
-    
-    $displayName = ($appInfo | Select-String -Pattern "Found (.+?) \[" | ForEach-Object { $_.Matches.Groups[1].Value.Trim() })
+
+    $displayName = $showPackage.Name
     if (-not $displayName) {
         $displayName = $selectedPackage.Name
     }
     if (-not $displayName) {
         $displayName = $packageId
     }
-    
-    $publisher = ($appInfo | Select-String -Pattern "Publisher:\s+(.+)" | ForEach-Object { $_.Matches.Groups[1].Value.Trim() })
+
+    $publisher = ($appInfoLines | Select-String -Pattern "Publisher:\s+(.+)" | ForEach-Object { $_.Matches.Groups[1].Value.Trim() } | Select-Object -First 1)
     if (-not $publisher) {
         $publisher = "Unknown"
     }
-    
-    $description = ($appInfo | Select-String -Pattern "Description:\s+(.+)" -Context 0,5 | ForEach-Object { $_.Line.Trim() })
+
+    $description = ($appInfoLines | Select-String -Pattern "Description:\s+(.+)" | ForEach-Object { $_.Matches.Groups[1].Value.Trim() } | Select-Object -First 1)
     if (-not $description) {
         $description = "No description available"
     }
-    
-    $homepage = ($appInfo | Select-String -Pattern "Homepage:\s+(.+)" | ForEach-Object { $_.Matches.Groups[1].Value.Trim() })
+
+    $homepage = ($appInfoLines | Select-String -Pattern "Homepage:\s+(.+)" | ForEach-Object { $_.Matches.Groups[1].Value.Trim() } | Select-Object -First 1)
     if (-not $homepage) {
         $homepage = ""
     }
-    
+
     Write-Success "Found: $displayName ($packageId) version $foundVersion"
-    
+
 } catch {
     Write-Error "Failed to search Winget: $_"
     exit 1
