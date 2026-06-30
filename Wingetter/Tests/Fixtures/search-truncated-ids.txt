@@ -1,0 +1,5 @@
+Name                                         Id                         Version                 Match             Source
+-------------------------------------------------------------------------------------------------------------------------
+Windows Terminal                             Microsoft.WindowsTerminal  1.18.3181.0             Moniker: terminal winget
+Windows Terminal Preview                     Microsoft.WindowsTerminal… 1.19.3172.0                               winget
+Texnomic SecureDNS Terminal                  Texnomic.SecureDNS-Termin… 0.3                                       winget
