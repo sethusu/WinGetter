@@ -4,17 +4,18 @@ This tool automates the creation of IntuneWin packages from Winget applications 
 
 ## Features
 
-- ✅ Interactive input dialog for Winget Package ID
+- ✅ **Graphical UI** with Winget search, radio-button package selection, output picker, live progress, and icon preview
+- ✅ Interactive CLI with input dialog for Winget Package ID
 - ✅ Automatic Winget search and download
-- ✅ Registry-based detection script (no Winget dependency)
-- ✅ Automatic uninstall script generation
+- ✅ **install.ps1**, **detection.ps1**, and **uninstall.ps1** following Intune Win32 best practices
+- ✅ Registry-based detection script (no Winget dependency on managed devices)
 - ✅ Content Prep Tool integration
+- ✅ **README.md** with every Intune upload field in Markdown (version, developer, description, commands, detection, requirements)
 - ✅ Complete metadata file generation (app.json, win32LobApp.json)
+- ✅ **packaging.log** and **packaging-error.log** for run diagnostics
 - ✅ Enhanced automatic logo download (JetBrains, GitHub projects, homepage URLs, and more)
-- ✅ Icon file handling
-- ✅ Proper installer filename handling
+- ✅ Icon file handling with GUI preview
 - ✅ Smart version detection (handles build numbers vs marketing versions)
-- ✅ Version included in readme.txt
 
 ## Prerequisites
 
@@ -24,9 +25,23 @@ This tool automates the creation of IntuneWin packages from Winget applications 
 
 ## Usage
 
-### Interactive Mode (Recommended)
+### Graphical Mode (Recommended)
 
-Simply run the script without parameters to open an input dialog:
+Launch the full WPF GUI with search, radio-button selection, progress tracking, and icon preview:
+
+```powershell
+.\Start-WingetterGui.ps1
+```
+
+Or:
+
+```powershell
+.\Create-IntuneWinFromWinget.ps1 -UseGui
+```
+
+### Interactive CLI Mode
+
+Run the script without parameters to open an input dialog:
 
 ```powershell
 .\Create-IntuneWinFromWinget.ps1
@@ -77,30 +92,38 @@ A dialog box will appear prompting you to enter the Winget Package ID.
 
 1. **Searches Winget** for the specified application
 2. **Downloads** the installer with proper filename
-3. **Creates detection.ps1** - Registry-based detection script
-4. **Creates uninstall.ps1** - Uninstall script that finds and executes the uninstaller
-5. **Handles icon files** - Copies icon to package directory
-6. **Creates metadata files**:
-   - `readme.txt` - Documentation
+3. **Creates install.ps1** - Silent install with IME transcript logging and return code handling
+4. **Creates detection.ps1** - Registry-based detection script
+5. **Creates uninstall.ps1** - Uninstall script that finds and executes the uninstaller
+6. **Handles icon files** - Downloads or extracts icon, with GUI preview
+7. **Creates metadata files**:
+   - `README.md` - Full Intune upload reference in Markdown
+   - `readme.txt` - Quick reference (legacy)
    - `app.json` - Application metadata
    - `win32LobApp.json` - Intune app definition with detection script
-7. **Packages with Content Prep Tool** - Creates the final `.intunewin` file
+   - `packaging.log` - Packaging run log
+   - `packaging-error.log` - Written when packaging fails
+8. **Packages with Content Prep Tool** - Creates the final `.intunewin` file
 
 ## Output Structure
 
 ```
 {OutputPath}/
 └── {PackageId}/
-    ├── logo.png (optional, if exists)
+    ├── logo.png (optional, if downloaded)
+    ├── {InstallerBaseName}.intunewin
     └── {Version}/
-        ├── {InstallerFileName}.exe
+        ├── {InstallerFileName}.exe|.msi|.msix
+        ├── install.ps1
         ├── detection.ps1
         ├── uninstall.ps1
+        ├── README.md
+        ├── readme.txt
         ├── app.json
         ├── win32LobApp.json
-        ├── readme.txt
-        ├── icon.png
-        └── {InstallerFileName}.intunewin (created in parent directory)
+        ├── packaging.log
+        ├── packaging-error.log (on failure)
+        └── icon.png
 ```
 
 ## Detection Script
