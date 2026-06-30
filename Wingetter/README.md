@@ -4,17 +4,16 @@ This tool automates the creation of IntuneWin packages from Winget applications 
 
 ## Features
 
-- ✅ Interactive input dialog for Winget Package ID
-- ✅ Automatic Winget search and download
-- ✅ Registry-based detection script (no Winget dependency)
-- ✅ Automatic uninstall script generation
-- ✅ Content Prep Tool integration
-- ✅ Complete metadata file generation (app.json, win32LobApp.json)
-- ✅ Enhanced automatic logo download (JetBrains, GitHub projects, homepage URLs, and more)
-- ✅ Icon file handling
-- ✅ Proper installer filename handling
-- ✅ Smart version detection (handles build numbers vs marketing versions)
-- ✅ Version included in readme.txt
+- ✅ Full GUI package builder with searchable Winget lookup
+- ✅ Radio-button package selection when multiple apps match
+- ✅ Output destination picker for package location
+- ✅ Optional icon selection with built-in icon preview panel
+- ✅ Optional Markdown description/notes for Intune metadata
+- ✅ Live packaging progress tracker window
+- ✅ Best-practice Intune script generation (`install.ps1`, `uninstall.ps1`, `detection.ps1`)
+- ✅ Complete metadata generation (`app.json`, `win32LobApp.json`)
+- ✅ Markdown `README.md` with Intune upload field reference
+- ✅ Failure logging to `run-failure.log` when packaging errors occur
 
 ## Prerequisites
 
@@ -24,15 +23,21 @@ This tool automates the creation of IntuneWin packages from Winget applications 
 
 ## Usage
 
-### Interactive Mode (Recommended)
+### Interactive GUI Mode (Recommended)
 
-Simply run the script without parameters to open an input dialog:
+Run the script without parameters to open the GUI package builder:
 
 ```powershell
 .\Create-IntuneWinFromWinget.ps1
 ```
 
-A dialog box will appear prompting you to enter the Winget Package ID.
+The GUI lets you:
+
+1. Search Winget
+2. Select one app using radio buttons
+3. Choose output destination
+4. Optionally set version, icon, and Markdown description
+5. Start packaging with live progress updates
 
 ### Command Line Usage
 
@@ -58,11 +63,17 @@ A dialog box will appear prompting you to enter the Winget Package ID.
 .\Create-IntuneWinFromWinget.ps1 -AppName "MaximaTeam.Maxima" -IconPath "C:\Icons\app-icon.png"
 ```
 
+### No-GUI Mode
+
+```powershell
+.\Create-IntuneWinFromWinget.ps1 -NoGui -AppName "Google.Chrome" -OutputPath "C:\IntunePackages"
+```
+
 ## Parameters
 
-- **AppName** (Optional): The name or ID of the application in Winget
-  - If not provided, an input dialog will appear to prompt for the Winget ID
-  - Examples: `"MaximaTeam.Maxima"`, `"maxima"`, `"Google.Chrome"`, `"JetBrains.WebStorm"`
+- **AppName** (Optional): Name or ID of the app in Winget.
+  - In GUI mode, this is optional and can be entered in the search box.
+  - In `-NoGui` mode, this is required.
   
 - **Version** (Optional): Specific version to download. If not specified, latest version is used.
 
@@ -70,40 +81,48 @@ A dialog box will appear prompting you to enter the Winget Package ID.
   - Packages will be created in: `{OutputPath}\{PackageId}\{Version}\`
 
 - **IconPath** (Optional): Path to icon file (PNG format recommended)
-  - If not provided, script will look for `logo.png` in the parent directory
-  - If neither found, package will be created without icon
+  - In GUI mode, this can be selected via file picker with preview.
+  - If not provided, package is created without `largeIcon`.
+
+- **DescriptionMarkdown** (Optional): Markdown content for app description/notes in README and metadata.
+
+- **NoGui** (Optional switch): Runs in terminal-only mode.
 
 ## What the Script Does
 
 1. **Searches Winget** for the specified application
 2. **Downloads** the installer with proper filename
-3. **Creates detection.ps1** - Registry-based detection script
-4. **Creates uninstall.ps1** - Uninstall script that finds and executes the uninstaller
-5. **Handles icon files** - Copies icon to package directory
+3. **Creates detection.ps1** - Registry-based detection script for Intune
+4. **Creates uninstall.ps1** - Registry-driven uninstall script
+5. **Creates install.ps1** - Standardized install wrapper script
+6. **Handles icon files** - Copies selected icon to package directory
 6. **Creates metadata files**:
-   - `readme.txt` - Documentation
+   - `README.md` - Documentation + full Intune field mapping
    - `app.json` - Application metadata
    - `win32LobApp.json` - Intune app definition with detection script
-7. **Packages with Content Prep Tool** - Creates the final `.intunewin` file
+7. **Writes failure diagnostics** to `run-failure.log` on failed run
+8. **Packages with Content Prep Tool** - Creates the final `.intunewin` file
 
 ## Output Structure
 
 ```
 {OutputPath}/
+├── wingetter-run-YYYYMMDD-HHMMSS.log
+├── run-failure.log (only on failure)
 └── {PackageId}/
-    ├── logo.png (optional, if exists)
     └── {Version}/
-        ├── {InstallerFileName}.exe
-        ├── detection.ps1
+        ├── {InstallerFileName}.exe|msi|msix|appx
+        ├── install.ps1
         ├── uninstall.ps1
+        ├── detection.ps1
         ├── app.json
         ├── win32LobApp.json
-        ├── readme.txt
-        ├── icon.png
-        └── {InstallerFileName}.intunewin (created in parent directory)
+        ├── README.md
+        ├── icon.png (optional)
+        └── {InstallerBaseName}.intunewin (created in parent directory)
 ```
 
-## Detection Script
+## Detection Script (`detection.ps1`)
 
 The detection script uses **registry-based detection** instead of Winget, making it more reliable for Intune deployments:
 
@@ -120,7 +139,14 @@ The detection script includes intelligent version handling:
 - **Multiple Versions**: Handles multiple installations and selects the highest version
 - **Flexible Matching**: Uses flexible name matching to find applications even with slight variations in registry entries
 
-## Uninstall Script
+## Install Script (`install.ps1`)
+
+The install script:
+- Runs from Intune as System context
+- Transcripts to Intune Management Extension log directory
+- Handles accepted return codes (`0`, `3010`, `1641`)
+
+## Uninstall Script (`uninstall.ps1`)
 
 The uninstall script:
 - Searches registry for uninstall string
@@ -172,24 +198,10 @@ The uninstall script:
 
 ## Notes
 
-- The script assumes silent install with `/S` flag. Adjust `installCommandLine` in JSON files if different flags are needed.
-- Icon files should be PNG format for best compatibility with Intune.
-- The script will overwrite existing files in the version directory.
-- IntuneWin files are created in the parent directory (same level as version folder).
-- **Automatic Logo Download**: The script automatically attempts to download logos from multiple sources with extensive pattern matching:
-  - **JetBrains Products**: Official JetBrains CDN resources
-  - **GitHub Projects**: Extensive GitHub repository searching
-    - Tries multiple branches (main, master, develop, dev)
-    - Tries 20+ common paths (logo.png, icon.png, assets/, img/, images/, etc.)
-    - Automatically extracts org/repo from GitHub homepage URLs
-    - Supports both raw.githubusercontent.com and github.com/raw patterns
-  - **Homepage URLs**: 15+ common logo paths on application websites
-  - **Winget Manifests**: Attempts to find icons in winget-pkgs repository
-  - **CDN Patterns**: Tries common CDN hosting patterns
-  - **Icon Extraction**: As last resort, extracts icons directly from EXE installers
-  - **Image Validation**: Verifies downloaded files are valid images (PNG, JPEG, GIF)
-  - **Smart Fallback**: Tries 50+ URL patterns before giving up
-- **Version in Readme**: The readme.txt file now includes a dedicated "Version:" line for easy reference.
+- EXE installers default to `/S`; MSI/MSIX/APPX command logic is generated automatically.
+- Icon files should be PNG format for best Intune compatibility.
+- Existing files in the version directory can be overwritten by subsequent runs.
+- IntuneWin files are generated one level above the version folder.
 
 ## Recent Improvements
 
