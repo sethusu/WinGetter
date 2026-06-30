@@ -2,6 +2,15 @@
 
 ## Version 2.0 - 2026-06-30
 
+### GUI Reliability (follow-up)
+- Fixed WPF search dialog crashes from invalid Brush/Thickness assignments
+- Packaging and Winget search now run on background threads (no UI freeze/deadlock)
+- Progress updates via thread-safe queue and DispatcherTimer
+- Step list updates by replacing items (works without INotifyPropertyChanged)
+- Search dialog always shown with radio buttons, even for a single result
+- Selected search version auto-fills version field and is passed to packaging
+- Partial packaging success (metadata without `.intunewin`) surfaced in the GUI
+
 ### New Features
 - **WPF Graphical Interface** (`Gui/Start-WingetterGui.ps1`)
   - Winget search with dedicated **radio-button selection dialog** for multiple results

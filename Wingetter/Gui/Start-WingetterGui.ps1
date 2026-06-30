@@ -11,7 +11,6 @@
 [CmdletBinding()]
 param()
 
-Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 Add-Type -AssemblyName PresentationFramework
@@ -20,7 +19,25 @@ Add-Type -AssemblyName WindowsBase
 Add-Type -AssemblyName System.Windows.Forms
 
 $moduleRoot = Split-Path -Parent $PSScriptRoot
-Import-Module (Join-Path $moduleRoot 'Wingetter.psd1') -Force
+$modulePath = Join-Path $moduleRoot 'Wingetter.psd1'
+Import-Module $modulePath -Force
+
+$brushConverter = New-Object System.Windows.Media.BrushConverter
+
+function ConvertTo-WpfBrush {
+    param([string]$Color)
+    return $brushConverter.ConvertFromString($Color)
+}
+
+function New-WpfThickness {
+    param(
+        [double]$Left = 0,
+        [double]$Top = 0,
+        [double]$Right = 0,
+        [double]$Bottom = 0
+    )
+    return New-Object System.Windows.Thickness($Left, $Top, $Right, $Bottom)
+}
 
 function Read-XamlWindow {
     param([string]$XamlPath)
@@ -64,8 +81,9 @@ function Set-IconPreview {
             $bitmap = New-Object System.Windows.Media.Imaging.BitmapImage
             $bitmap.BeginInit()
             $bitmap.CacheOption = [System.Windows.Media.Imaging.BitmapCacheOption]::OnLoad
-            $bitmap.UriSource = [Uri]::new($ImagePath)
+            $bitmap.UriSource = [Uri]::new((Resolve-Path $ImagePath).Path)
             $bitmap.EndInit()
+            $bitmap.Freeze()
             $ImageControl.Source = $bitmap
             $StatusControl.Text = [System.IO.Path]::GetFileName($ImagePath)
             return
@@ -85,49 +103,50 @@ function Show-WingetterSearchDialog {
     )
 
     $dialogPath = Join-Path $PSScriptRoot 'Wingetter.SearchDialog.xaml'
-    $window = Read-XamlWindow -XamlPath $dialogPath
-    $window.Owner = $OwnerWindow
+    $dialogWindow = Read-XamlWindow -XamlPath $dialogPath
+    $dialogWindow.Owner = $OwnerWindow
 
-    $summary = $window.FindName('SearchSummaryText')
-    $panel = $window.FindName('ResultsPanel')
-    $selectButton = $window.FindName('SelectButton')
-    $cancelButton = $window.FindName('CancelButton')
+    $summary = $dialogWindow.FindName('SearchSummaryText')
+    $panel = $dialogWindow.FindName('ResultsPanel')
+    $selectButton = $dialogWindow.FindName('SelectButton')
+    $cancelButton = $dialogWindow.FindName('CancelButton')
 
     $summary.Text = "Found $($Packages.Count) result(s) for '$SearchQuery'. Select the application you want to package."
-    $radioGroup = New-Object System.Windows.Controls.RadioButton
-    $selectedPackage = $null
+
+    $dialogSelection = @{ Package = $null }
     $firstRadio = $null
 
     foreach ($package in $Packages) {
         $border = New-Object System.Windows.Controls.Border
-        $border.Margin = '0,0,0,8'
-        $border.Padding = '10'
-        $border.CornerRadius = 6
-        $border.BorderBrush = '#D8DEE9'
-        $border.BorderThickness = 1
-        $border.Background = 'White'
+        $border.Margin = New-WpfThickness -Bottom 8
+        $border.Padding = New-WpfThickness -Left 10 -Top 10 -Right 10 -Bottom 10
+        $border.CornerRadius = New-Object System.Windows.CornerRadius(6)
+        $border.BorderBrush = ConvertTo-WpfBrush '#D8DEE9'
+        $border.BorderThickness = New-WpfThickness -Left 1 -Top 1 -Right 1 -Bottom 1
+        $border.Background = [System.Windows.Media.Brushes]::White
 
         $stack = New-Object System.Windows.Controls.StackPanel
         $radio = New-Object System.Windows.Controls.RadioButton
         $radio.GroupName = 'WingetterPackageSelection'
-        $radio.Margin = '0,0,0,4'
+        $radio.Margin = New-WpfThickness -Bottom 4
         $radio.Content = "$($package.Name)  ($($package.Id))"
-        $radio.FontWeight = 'SemiBold'
+        $radio.FontWeight = [System.Windows.FontWeights]::SemiBold
         $radio.Tag = $package
+
+        $capturedPackage = $package
         $radio.Add_Checked({
-            param($sender, $e)
-            $script:selectedPackage = $sender.Tag
-        }.GetNewClosure())
+            $dialogSelection.Package = $capturedPackage
+        })
 
         if (-not $firstRadio) {
             $firstRadio = $radio
-            $selectedPackage = $package
+            $dialogSelection.Package = $package
         }
 
         $versionText = New-Object System.Windows.Controls.TextBlock
         $versionText.Text = "Version: $($package.Version)$(if ($package.Source) { "  |  Source: $($package.Source)" })"
-        $versionText.Foreground = '#5C6B7A'
-        $versionText.Margin = '22,0,0,0'
+        $versionText.Foreground = ConvertTo-WpfBrush '#5C6B7A'
+        $versionText.Margin = New-WpfThickness -Left 22
 
         $stack.Children.Add($radio) | Out-Null
         $stack.Children.Add($versionText) | Out-Null
@@ -139,24 +158,23 @@ function Show-WingetterSearchDialog {
         $firstRadio.IsChecked = $true
     }
 
-    $result = $null
     $selectButton.Add_Click({
-        if ($script:selectedPackage) {
-            $script:dialogResult = $script:selectedPackage
-            $window.DialogResult = $true
-            $window.Close()
+        if ($dialogSelection.Package) {
+            $dialogWindow.Tag = $dialogSelection.Package
+            $dialogWindow.DialogResult = $true
+            $dialogWindow.Close()
         } else {
-            [System.Windows.MessageBox]::Show($window, 'Please select an application.', 'Wingetter', 'OK', 'Warning') | Out-Null
+            [System.Windows.MessageBox]::Show($dialogWindow, 'Please select an application.', 'Wingetter', 'OK', 'Warning') | Out-Null
         }
-    }.GetNewClosure())
-
-    $cancelButton.Add_Click({
-        $window.DialogResult = $false
-        $window.Close()
     })
 
-    if ($window.ShowDialog()) {
-        return $script:selectedPackage
+    $cancelButton.Add_Click({
+        $dialogWindow.DialogResult = $false
+        $dialogWindow.Close()
+    })
+
+    if ($dialogWindow.ShowDialog()) {
+        return $dialogWindow.Tag
     }
     return $null
 }
@@ -171,24 +189,46 @@ function Add-LogLine {
     $LogControl.ScrollToEnd()
 }
 
+$script:StepLabels = @(
+    'Load package details'
+    'Create output directories'
+    'Download installer from Winget'
+    'Calculate installer hash'
+    'Generate install.ps1'
+    'Generate detection.ps1'
+    'Generate uninstall.ps1'
+    'Resolve application icon'
+    'Write metadata and README.md'
+    'Create .intunewin package'
+    'Finalize output'
+)
+
+$script:StepStates = @('Pending') * $script:StepLabels.Count
+
 function Initialize-StepList {
     param($ListControl)
+    $script:StepStates = @('Pending') * $script:StepLabels.Count
     $ListControl.Items.Clear()
-    $steps = @(
-        'Load package details'
-        'Create output directories'
-        'Download installer from Winget'
-        'Calculate installer hash'
-        'Generate install.ps1'
-        'Generate detection.ps1'
-        'Generate uninstall.ps1'
-        'Resolve application icon'
-        'Write metadata and README.md'
-        'Create .intunewin package'
-        'Finalize output'
-    )
-    foreach ($step in $steps) {
-        $ListControl.Items.Add([PSCustomObject]@{ Icon = '○'; Text = $step }) | Out-Null
+    for ($i = 0; $i -lt $script:StepLabels.Count; $i++) {
+        $ListControl.Items.Add((New-StepListItem -Index $i)) | Out-Null
+    }
+}
+
+function Get-StepIcon {
+    param([string]$State)
+    switch ($State) {
+        'Running' { return [char]0x25B6 }
+        'Completed' { return [char]0x2713 }
+        'Failed' { return [char]0x2717 }
+        default { return [char]0x25CB }
+    }
+}
+
+function New-StepListItem {
+    param([int]$Index)
+    return [PSCustomObject]@{
+        Icon = Get-StepIcon $script:StepStates[$Index]
+        Text = $script:StepLabels[$Index]
     }
 }
 
@@ -200,18 +240,112 @@ function Update-StepList {
         [string]$State
     )
 
-    if ($StepIndex -lt 0 -or $StepIndex -ge $ListControl.Items.Count) {
+    if ($StepIndex -lt 0 -or $StepIndex -ge $script:StepLabels.Count) {
         return
     }
 
-    $item = $ListControl.Items[$StepIndex]
-    switch ($State) {
-        'Running' { $item.Icon = '▶' }
-        'Completed' { $item.Icon = '✓' }
-        'Failed' { $item.Icon = '✗' }
-        default { $item.Icon = '○' }
+    $script:StepStates[$StepIndex] = $State
+    $ListControl.Items[$StepIndex] = New-StepListItem -Index $StepIndex
+}
+
+function Invoke-UiProgressUpdate {
+    param(
+        $Event,
+        $ProgressBar,
+        $ProgressStatus,
+        $StepList,
+        $LogText,
+        $StepMap
+    )
+
+    if ($Event.Type -eq 'Progress') {
+        if ($Event.Percent -ge 0) {
+            $ProgressBar.Value = [math]::Min(100, $Event.Percent)
+        }
+        if ($Event.Message) {
+            $ProgressStatus.Text = "$($Event.StepName): $($Event.Message)"
+        } else {
+            $ProgressStatus.Text = $Event.StepName
+        }
+
+        if ($StepMap.ContainsKey($Event.Step)) {
+            $index = $StepMap[$Event.Step]
+            for ($i = 0; $i -lt $index; $i++) {
+                if ($script:StepStates[$i] -ne 'Failed') {
+                    Update-StepList -ListControl $StepList -StepIndex $i -State Completed
+                }
+            }
+            if ($Event.Status -eq 'Completed') {
+                Update-StepList -ListControl $StepList -StepIndex $index -State Completed
+            } elseif ($Event.Status -eq 'Failed') {
+                Update-StepList -ListControl $StepList -StepIndex $index -State Failed
+            } else {
+                Update-StepList -ListControl $StepList -StepIndex $index -State Running
+            }
+        }
+
+        if ($Event.Message) {
+            Add-LogLine -LogControl $LogText -Message "$($Event.StepName) - $($Event.Message)"
+        } else {
+            Add-LogLine -LogControl $LogText -Message $Event.StepName
+        }
+    } elseif ($Event.Message) {
+        Add-LogLine -LogControl $LogText -Message $Event.Message
     }
-    $ListControl.Items.Refresh()
+}
+
+function Start-WingetterBackgroundPackaging {
+    param(
+        [hashtable]$PackArguments,
+        [System.Collections.Concurrent.ConcurrentQueue[object]]$ProgressQueue
+    )
+
+    $runspace = [runspacefactory]::CreateRunspace()
+    $runspace.Open()
+    $powershell = [powershell]::Create()
+    $powershell.Runspace = $runspace
+
+    $null = $powershell.AddScript({
+        param($ModulePath, $PackageId, $Version, $OutputPath, $IconPath, $Queue)
+        Import-Module $ModulePath -Force
+        $onProgress = {
+            param($Event)
+            $null = $Queue.Enqueue($Event)
+        }
+        $params = @{
+            PackageId = $PackageId
+            OutputPath = $OutputPath
+            OnProgress = $onProgress
+        }
+        if ($Version) { $params.Version = $Version }
+        if ($IconPath) { $params.IconPath = $IconPath }
+        Invoke-WingetterPackaging @params
+    }).AddArgument($modulePath).
+      AddArgument($PackArguments.PackageId).
+      AddArgument($PackArguments.Version).
+      AddArgument($PackArguments.OutputPath).
+      AddArgument($PackArguments.IconPath).
+      AddArgument($ProgressQueue)
+
+    return @{
+        PowerShell = $powershell
+        Runspace = $runspace
+        AsyncResult = $powershell.BeginInvoke()
+    }
+}
+
+function Start-WingetterBackgroundSearch {
+    param(
+        [string]$Query
+    )
+
+    $job = Start-Job -ArgumentList $modulePath, $Query -ScriptBlock {
+        param($ModulePath, $SearchQuery)
+        Import-Module $ModulePath -Force
+        Search-WingetPackages -Query $SearchQuery
+    }
+
+    return $job
 }
 
 # Main window
@@ -240,6 +374,15 @@ $script:selectedPackage = $null
 $script:customIconPath = $null
 $script:lastOutputDirectory = $null
 $script:isRunning = $false
+$script:searchJob = $null
+$script:searchTimer = $null
+$script:packTimer = $null
+$script:packWorker = $null
+$script:progressQueue = $null
+
+$stepMap = @{
+    1 = 0; 2 = 1; 3 = 2; 4 = 3; 5 = 4; 6 = 5; 7 = 6; 8 = 7; 9 = 8; 10 = 9; 12 = 10
+}
 
 $settings = Get-WingetterSettings
 $outputPathBox.Text = $settings.OutputPath
@@ -249,75 +392,268 @@ Initialize-StepList -ListControl $stepList
 $prereqs = Test-WingetterPrerequisites
 if ($prereqs.Issues.Count -eq 0) {
     $prereqText.Text = "Ready | Winget $($prereqs.WingetVersion) | Content Prep Tool: $($prereqs.ContentPrepToolPath)"
-    $prereqText.Foreground = '#2E7D32'
+    $prereqText.Foreground = ConvertTo-WpfBrush '#2E7D32'
 } else {
     $prereqText.Text = 'Missing prerequisites: ' + ($prereqs.Issues -join ' ')
-    $prereqText.Foreground = '#C62828'
-    $packButton.IsEnabled = $false
+    $prereqText.Foreground = ConvertTo-WpfBrush '#C62828'
+}
+
+function Set-SearchControlsEnabled {
+    param([bool]$Enabled)
+    $searchButton.IsEnabled = $Enabled
+    $selectAppButton.IsEnabled = $Enabled
+    $searchBox.IsEnabled = $Enabled
+}
+
+function Set-PackControlsEnabled {
+    param([bool]$Enabled)
+    $packButton.IsEnabled = $Enabled
+    $searchButton.IsEnabled = $Enabled
+    $selectAppButton.IsEnabled = $Enabled
+    $searchBox.IsEnabled = $Enabled
+    $browseOutputButton.IsEnabled = $Enabled
+    $browseIconButton.IsEnabled = $Enabled
+    if (-not $Enabled) {
+        $openOutputButton.IsEnabled = $false
+    }
 }
 
 function Update-SelectedAppDisplay {
     if ($script:selectedPackage) {
         $selectedAppText.Text = "Selected: $($script:selectedPackage.Name) | $($script:selectedPackage.Id) | Version: $($script:selectedPackage.Version)"
-        $selectedAppText.Foreground = '#1B2A41'
+        $selectedAppText.Foreground = ConvertTo-WpfBrush '#1B2A41'
+        if (-not $versionBox.Text.Trim()) {
+            $versionBox.Text = if ($script:selectedPackage.Version -ne 'Unknown') { $script:selectedPackage.Version } else { '' }
+        }
     } else {
         $selectedAppText.Text = 'No application selected.'
-        $selectedAppText.Foreground = '#5C6B7A'
+        $selectedAppText.Foreground = ConvertTo-WpfBrush '#5C6B7A'
+    }
+}
+
+function Complete-WingetterSearch {
+    param(
+        [array]$Packages,
+        [string]$Query,
+        [object]$ErrorRecord = $null
+    )
+
+    Set-SearchControlsEnabled -Enabled $true
+    $progressStatus.Text = 'Ready.'
+
+    if ($ErrorRecord) {
+        Add-LogLine -LogControl $logText -Message "Search failed: $($ErrorRecord.Exception.Message)"
+        [System.Windows.MessageBox]::Show($window, "Search failed:`n$($ErrorRecord.Exception.Message)", 'Wingetter', 'OK', 'Error') | Out-Null
+        return
+    }
+
+    Save-WingetterSettings -LastSearch $Query
+
+    if ($Packages.Count -eq 0) {
+        Add-LogLine -LogControl $logText -Message 'No packages found.'
+        [System.Windows.MessageBox]::Show($window, "No packages found for '$Query'.", 'Wingetter', 'OK', 'Warning') | Out-Null
+        return
+    }
+
+    $picked = Show-WingetterSearchDialog -Packages $Packages -SearchQuery $Query -OwnerWindow $window
+    if ($picked) {
+        $script:selectedPackage = $picked
+        Add-LogLine -LogControl $logText -Message "Selected $($script:selectedPackage.Id) version $($script:selectedPackage.Version)."
+        Update-SelectedAppDisplay
+    } else {
+        Add-LogLine -LogControl $logText -Message 'Search selection cancelled.'
     }
 }
 
 function Invoke-WingetterSearch {
     param([string]$Query)
 
+    if ($script:isRunning) { return }
+
     if ([string]::IsNullOrWhiteSpace($Query)) {
         [System.Windows.MessageBox]::Show($window, 'Enter an application name or Winget package ID to search.', 'Wingetter', 'OK', 'Information') | Out-Null
         return
     }
 
-    try {
-        $searchButton.IsEnabled = $false
-        $selectAppButton.IsEnabled = $false
-        Add-LogLine -LogControl $logText -Message "Searching Winget for '$Query'..."
-        $packages = Search-WingetPackages -Query $Query.Trim()
-        Save-WingetterSettings -LastSearch $Query.Trim()
+    if ($script:searchTimer) {
+        $script:searchTimer.Stop()
+        $script:searchTimer = $null
+    }
+    if ($script:searchJob) {
+        Remove-Job -Job $script:searchJob -Force -ErrorAction SilentlyContinue
+        $script:searchJob = $null
+    }
 
-        if ($packages.Count -eq 0) {
-            Add-LogLine -LogControl $logText -Message 'No packages found.'
-            [System.Windows.MessageBox]::Show($window, "No packages found for '$Query'.", 'Wingetter', 'OK', 'Warning') | Out-Null
-            return
-        }
+    Set-SearchControlsEnabled -Enabled $false
+    $progressStatus.Text = 'Searching Winget...'
+    Add-LogLine -LogControl $logText -Message "Searching Winget for '$Query'..."
 
-        if ($packages.Count -eq 1) {
-            $script:selectedPackage = $packages[0]
-            Add-LogLine -LogControl $logText -Message "Auto-selected $($script:selectedPackage.Id)."
-        } else {
-            $picked = Show-WingetterSearchDialog -Packages $packages -SearchQuery $Query -OwnerWindow $window
-            if ($picked) {
-                $script:selectedPackage = $picked
-                Add-LogLine -LogControl $logText -Message "Selected $($script:selectedPackage.Id) from search results."
+    $script:searchJob = Start-WingetterBackgroundSearch -Query $Query.Trim()
+    $searchQuery = $Query.Trim()
+
+    $script:searchTimer = New-Object System.Windows.Threading.DispatcherTimer
+    $script:searchTimer.Interval = [TimeSpan]::FromMilliseconds(200)
+    $script:searchTimer.Add_Tick({
+        if ($script:searchJob.State -eq 'Running') { return }
+
+        $script:searchTimer.Stop()
+        $job = $script:searchJob
+        $script:searchJob = $null
+        $script:searchTimer = $null
+
+        try {
+            if ($job.State -eq 'Failed') {
+                $err = Receive-Job -Job $job -ErrorAction SilentlyContinue
+                throw ($err | Out-String)
             }
+            $packages = Receive-Job -Job $job
+            Complete-WingetterSearch -Packages $packages -Query $searchQuery
+        } catch {
+            Complete-WingetterSearch -Packages @() -Query $searchQuery -ErrorRecord $_
+        } finally {
+            Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
         }
+    })
+    $script:searchTimer.Start()
+}
 
-        Update-SelectedAppDisplay
+function Complete-WingetterPackaging {
+    param(
+        [object]$Result = $null,
+        [object]$ErrorRecord = $null
+    )
+
+    if ($script:packTimer) {
+        $script:packTimer.Stop()
+        $script:packTimer = $null
     }
-    catch {
-        Add-LogLine -LogControl $logText -Message "Search failed: $_"
-        [System.Windows.MessageBox]::Show($window, "Search failed:`n$_", 'Wingetter', 'OK', 'Error') | Out-Null
+
+    if ($script:packWorker) {
+        if ($script:packWorker.PowerShell) {
+            $script:packWorker.PowerShell.Dispose()
+        }
+        if ($script:packWorker.Runspace) {
+            $script:packWorker.Runspace.Close()
+        }
+        $script:packWorker = $null
     }
-    finally {
-        $searchButton.IsEnabled = $true
-        $selectAppButton.IsEnabled = $true
+
+    $script:progressQueue = $null
+    $script:isRunning = $false
+    Set-PackControlsEnabled -Enabled $true
+
+    if ($ErrorRecord) {
+        $progressStatus.Text = 'Packaging failed.'
+        Add-LogLine -LogControl $logText -Message "Packaging failed: $($ErrorRecord.Exception.Message)"
+        [System.Windows.MessageBox]::Show(
+            $window,
+            "Packaging failed.`n`n$($ErrorRecord.Exception.Message)`n`nSee wingetter-packaging.log in the output folder if it was created.",
+            'Wingetter',
+            'OK',
+            'Error'
+        ) | Out-Null
+        return
+    }
+
+    $script:lastOutputDirectory = $Result.VersionDirectory
+    $openOutputButton.IsEnabled = $true
+    Set-IconPreview -ImageControl $iconPreview -StatusControl $iconStatus -ImagePath $Result.IconFile
+
+    if ($Result.PackagingSucceeded) {
+        $progressStatus.Text = 'Packaging completed successfully.'
+        Add-LogLine -LogControl $logText -Message "Success: $($Result.IntuneWinFile)"
+        [System.Windows.MessageBox]::Show(
+            $window,
+            "Package created successfully.`n`n$($Result.DisplayName)`n$($Result.IntuneWinFile)",
+            'Wingetter',
+            'OK',
+            'Information'
+        ) | Out-Null
+    } else {
+        $progressStatus.Text = 'Packaging completed with warnings.'
+        Add-LogLine -LogControl $logText -Message 'Metadata and scripts created, but .intunewin packaging failed or Content Prep Tool is unavailable.'
+        [System.Windows.MessageBox]::Show(
+            $window,
+            "Package files were created, but the .intunewin step did not complete.`n`nOutput: $($Result.VersionDirectory)`n`nCheck wingetter-packaging.log for details.",
+            'Wingetter',
+            'OK',
+            'Warning'
+        ) | Out-Null
     }
 }
 
-$searchButton.Add_Click({
-    Invoke-WingetterSearch -Query $searchBox.Text
-})
+function Start-WingetterPackagingFromUi {
+    if (-not $script:selectedPackage) {
+        [System.Windows.MessageBox]::Show($window, 'Search for and select an application before packaging.', 'Wingetter', 'OK', 'Warning') | Out-Null
+        return
+    }
 
-$selectAppButton.Add_Click({
-    Invoke-WingetterSearch -Query $searchBox.Text
-})
+    if ([string]::IsNullOrWhiteSpace($outputPathBox.Text)) {
+        [System.Windows.MessageBox]::Show($window, 'Choose an output destination folder.', 'Wingetter', 'OK', 'Warning') | Out-Null
+        return
+    }
 
+    $script:isRunning = $true
+    Set-PackControlsEnabled -Enabled $false
+    $progressBar.Value = 0
+    Initialize-StepList -ListControl $stepList
+
+    $versionOverride = $versionBox.Text.Trim()
+    $outputPath = $outputPathBox.Text.Trim()
+    Save-WingetterSettings -OutputPath $outputPath -LastPackageId $script:selectedPackage.Id
+
+    $packageVersion = $versionOverride
+    if (-not $packageVersion -and $script:selectedPackage.Version -and $script:selectedPackage.Version -ne 'Unknown') {
+        $packageVersion = $script:selectedPackage.Version
+    }
+
+    $packArguments = @{
+        PackageId = $script:selectedPackage.Id
+        Version = $packageVersion
+        OutputPath = $outputPath
+        IconPath = $script:customIconPath
+    }
+
+    $script:progressQueue = New-Object System.Collections.Concurrent.ConcurrentQueue[object]
+    Add-LogLine -LogControl $logText -Message "Starting packaging for $($script:selectedPackage.Id)..."
+
+    $script:packWorker = Start-WingetterBackgroundPackaging -PackArguments $packArguments -ProgressQueue $script:progressQueue
+
+    $script:packTimer = New-Object System.Windows.Threading.DispatcherTimer
+    $script:packTimer.Interval = [TimeSpan]::FromMilliseconds(150)
+    $script:packTimer.Add_Tick({
+        $item = $null
+        while ($script:progressQueue -and $script:progressQueue.TryDequeue([ref]$item)) {
+            Invoke-UiProgressUpdate -Event $item -ProgressBar $progressBar -ProgressStatus $progressStatus `
+                -StepList $stepList -LogText $logText -StepMap $stepMap
+        }
+
+        if (-not $script:packWorker) { return }
+
+        if ($script:packWorker.AsyncResult.IsCompleted) {
+            $item = $null
+            while ($script:progressQueue -and $script:progressQueue.TryDequeue([ref]$item)) {
+                Invoke-UiProgressUpdate -Event $item -ProgressBar $progressBar -ProgressStatus $progressStatus `
+                    -StepList $stepList -LogText $logText -StepMap $stepMap
+            }
+
+            $worker = $script:packWorker
+            try {
+                $result = $worker.PowerShell.EndInvoke($worker.AsyncResult)
+                if ($result -is [array] -and $result.Count -eq 1) {
+                    $result = $result[0]
+                }
+                Complete-WingetterPackaging -Result $result
+            } catch {
+                Complete-WingetterPackaging -ErrorRecord $_
+            }
+        }
+    })
+    $script:packTimer.Start()
+}
+
+$searchButton.Add_Click({ Invoke-WingetterSearch -Query $searchBox.Text })
+$selectAppButton.Add_Click({ Invoke-WingetterSearch -Query $searchBox.Text })
 $searchBox.Add_KeyDown({
     param($sender, $e)
     if ($e.Key -eq 'Return') {
@@ -350,109 +686,17 @@ $openOutputButton.Add_Click({
 
 $packButton.Add_Click({
     if ($script:isRunning) { return }
+    Start-WingetterPackagingFromUi
+})
 
-    if (-not $script:selectedPackage) {
-        [System.Windows.MessageBox]::Show($window, 'Search for and select an application before packaging.', 'Wingetter', 'OK', 'Warning') | Out-Null
-        return
-    }
-
-    if ([string]::IsNullOrWhiteSpace($outputPathBox.Text)) {
-        [System.Windows.MessageBox]::Show($window, 'Choose an output destination folder.', 'Wingetter', 'OK', 'Warning') | Out-Null
-        return
-    }
-
-    $script:isRunning = $true
-    $packButton.IsEnabled = $false
-    $searchButton.IsEnabled = $false
-    $selectAppButton.IsEnabled = $false
-    $openOutputButton.IsEnabled = $false
-    $progressBar.Value = 0
-    Initialize-StepList -ListControl $stepList
-
-    $versionOverride = $versionBox.Text.Trim()
-    $outputPath = $outputPathBox.Text.Trim()
-    Save-WingetterSettings -OutputPath $outputPath -LastPackageId $script:selectedPackage.Id
-
-    $stepMap = @{
-        1 = 0; 2 = 1; 3 = 2; 4 = 3; 5 = 4; 6 = 5; 7 = 6; 8 = 7; 9 = 8; 10 = 9; 12 = 10
-    }
-
-    $onProgress = {
-        param($Event)
-        $window.Dispatcher.Invoke([action]{
-            if ($Event.Type -eq 'Progress') {
-                if ($Event.Percent -ge 0) {
-                    $progressBar.Value = [math]::Min(100, $Event.Percent)
-                }
-                if ($Event.Message) {
-                    $progressStatus.Text = "$($Event.StepName): $($Event.Message)"
-                } else {
-                    $progressStatus.Text = $Event.StepName
-                }
-
-                if ($stepMap.ContainsKey($Event.Step)) {
-                    $index = $stepMap[$Event.Step]
-                    for ($i = 0; $i -lt $index; $i++) {
-                        Update-StepList -ListControl $stepList -StepIndex $i -State Completed
-                    }
-                    if ($Event.Status -eq 'Completed') {
-                        Update-StepList -ListControl $stepList -StepIndex $index -State Completed
-                    } elseif ($Event.Status -eq 'Failed') {
-                        Update-StepList -ListControl $stepList -StepIndex $index -State Failed
-                    } else {
-                        Update-StepList -ListControl $stepList -StepIndex $index -State Running
-                    }
-                }
-
-                Add-LogLine -LogControl $logText -Message "$($Event.StepName) - $($Event.Message)"
-            } else {
-                Add-LogLine -LogControl $logText -Message $Event.Message
-            }
-        })
-    }
-
-    $packParams = @{
-        PackageId = $script:selectedPackage.Id
-        OutputPath = $outputPath
-        OnProgress = $onProgress
-    }
-    if ($versionOverride) { $packParams.Version = $versionOverride }
-    if ($script:customIconPath) { $packParams.IconPath = $script:customIconPath }
-
-    try {
-        Add-LogLine -LogControl $logText -Message "Starting packaging for $($script:selectedPackage.Id)..."
-        $result = Invoke-WingetterPackaging @packParams
-
-        $script:lastOutputDirectory = $result.VersionDirectory
-        $openOutputButton.IsEnabled = $true
-        Set-IconPreview -ImageControl $iconPreview -StatusControl $iconStatus -ImagePath $result.IconFile
-
-        $progressStatus.Text = 'Packaging completed successfully.'
-        Add-LogLine -LogControl $logText -Message "Success: $($result.IntuneWinFile)"
-        [System.Windows.MessageBox]::Show(
-            $window,
-            "Package created successfully.`n`n$($result.DisplayName)`n$($result.IntuneWinFile)",
-            'Wingetter',
-            'OK',
-            'Information'
-        ) | Out-Null
-    }
-    catch {
-        $progressStatus.Text = 'Packaging failed.'
-        Add-LogLine -LogControl $logText -Message "Packaging failed: $_"
-        [System.Windows.MessageBox]::Show(
-            $window,
-            "Packaging failed.`n`n$_`n`nSee wingetter-packaging.log in the output folder if it was created.",
-            'Wingetter',
-            'OK',
-            'Error'
-        ) | Out-Null
-    }
-    finally {
-        $script:isRunning = $false
-        $packButton.IsEnabled = $true
-        $searchButton.IsEnabled = $true
-        $selectAppButton.IsEnabled = $true
+$window.Add_Closed({
+    if ($script:searchTimer) { $script:searchTimer.Stop() }
+    if ($script:packTimer) { $script:packTimer.Stop() }
+    if ($script:searchJob) { Remove-Job -Job $script:searchJob -Force -ErrorAction SilentlyContinue }
+    if ($script:packWorker -and $script:packWorker.PowerShell) {
+        try { $script:packWorker.PowerShell.Stop() } catch { }
+        $script:packWorker.PowerShell.Dispose()
+        $script:packWorker.Runspace.Close()
     }
 })
 
@@ -461,4 +705,4 @@ if ($settings.LastPackageId) {
 }
 
 Add-LogLine -LogControl $logText -Message 'Wingetter GUI ready.'
-$window.ShowDialog() | Out-Null
+[void]$window.ShowDialog()
