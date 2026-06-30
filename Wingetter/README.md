@@ -5,14 +5,17 @@ Wingetter automates the creation of Intune Win32 (`.intunewin`) packages from Wi
 ## Features
 
 - **Graphical interface** with Winget search, radio-button app selection, output folder picker, live progress tracking, and icon preview
+- **Post-packaging icon picker** — choose among up to 3 downloaded icon candidates after packaging completes
 - **CLI mode** for scripting and automation
 - Automatic Winget search and installer download
 - **`install.ps1`**, **`detection.ps1`**, and **`uninstall.ps1`** following Intune Win32 best practices (transcript logging, return codes, sysnative PowerShell invocation)
 - **`README.md`** with every Intune portal field documented in Markdown (name, description, publisher, developer, version, commands, detection, return codes, and more)
 - **`win32LobApp.json`** and **`app.json`** metadata exports
-- Automatic logo download and icon extraction
+- Tiered icon resolution (Wikimedia, web search, Winget manifest, homepage, EXE extraction)
 - **`wingetter-packaging.log`** written when a packaging run fails
 - Settings persistence (`%AppData%\Wingetter\settings.json`)
+
+> **New to WinGetter?** Start with the [repository README](../README.md) for a coworker-friendly overview.
 
 ## Prerequisites
 
@@ -41,7 +44,8 @@ Or launch via the main script with no parameters:
 4. Optionally set a specific **version** or **custom icon**.
 5. Click **Create Package** and watch the **live progress tracker** and step list.
 6. Preview the resolved **icon** in the right panel.
-7. When complete, click **Open Output Folder** to review the generated files.
+7. When packaging finishes, pick the best icon from the **icon picker** if multiple candidates were found.
+8. When complete, click **Open Output Folder** to review the generated files.
 
 ## CLI Usage
 
@@ -78,6 +82,7 @@ Or launch via the main script with no parameters:
         ├── app.json
         ├── win32LobApp.json
         ├── icon.png
+        ├── .icon-candidates/        ← Alternate icon downloads (GUI picker)
         ├── wingetter-packaging.log  ← Created when packaging fails
         └── ../{InstallerBase}.intunewin
 ```
@@ -116,26 +121,25 @@ Each package includes a Markdown README with a complete **Intune Portal Upload R
 
 ## Icon Resolution
 
-Wingetter resolves icons using a **tiered strategy** (most reliable first):
+Wingetter resolves icons using a **tiered, scored strategy** (most reliable first):
 
-| Priority | Source | Why it works |
-|----------|--------|--------------|
-| 1 | `winget show` icon metadata | Official WinGet CDN icon URLs when exposed by the client |
-| 2 | Winget manifest (`winget-pkgs`) | Reads `PackageUrl` / `IconUrl` from the locale YAML for that version |
-| 3 | Homepage metadata | `apple-touch-icon`, `favicon.ico`, Open Graph `og:image` from the app website |
-| 4 | Known publisher patterns | Curated fallbacks (e.g. `Valve.Steam` → `store.steampowered.com/favicon.ico`) |
-| 5 | Heuristic URLs | GitHub/logo paths, winget-pkgs icon paths |
-| 6 | Installer EXE | `ExtractAssociatedIcon` + multi-index shell extraction |
+| Priority | Source | Notes |
+|----------|--------|-------|
+| 1 | Known publisher URLs | Curated PNG/ICO URLs (e.g. Steam, JetBrains, Microsoft) |
+| 2 | Wikimedia Commons | Searches for product logo PNGs |
+| 3 | Clearbit / web image search | Domain logos and Bing image search results |
+| 4 | `winget show` + manifest | IconUrl and homepage metadata from winget-pkgs |
+| 5 | Homepage metadata | Favicons, apple-touch-icon, Open Graph images |
+| 6 | Installer EXE | Associated icon and shell extraction |
 
-**ICO favicons** (common for Steam and many publishers) are automatically converted to **PNG** for Intune.
+**ICO favicons** are converted to **PNG** for Intune. In the GUI, up to **3 distinct candidates** are downloaded; after packaging you can pick the best match in the icon picker dialog.
 
-### Steam example
-
-For `Valve.Steam`, the resolver uses the official store homepage from the Winget manifest (`https://store.steampowered.com/about/`), then downloads and converts `https://store.steampowered.com/favicon.ico`.
+GitHub and generic favicon URLs are deprioritized or filtered unless the app homepage is on GitHub.
 
 ### Tips for best results
 
 - Use the **GUI icon preview** after selecting an app — if preview fails, pick a **Custom Icon** before packaging
+- After packaging, use the **icon picker** if the default icon looks wrong
 - For internal apps, always supply `-IconPath` or a PNG in the app folder
 - PNG 256×256 or larger works best for Intune portal upload
 
