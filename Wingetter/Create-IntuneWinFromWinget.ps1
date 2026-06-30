@@ -76,14 +76,12 @@ function Select-WingetPackage {
     
     # Parse the search results
     $packages = @()
-    $inTable = $false
     $headerLineIndex = -1
     
     # Find the header line
     for ($i = 0; $i -lt $SearchOutput.Count; $i++) {
         if ($SearchOutput[$i] -match "Name\s+Id\s+Version") {
             $headerLineIndex = $i
-            $inTable = $true
             break
         }
     }
@@ -118,13 +116,11 @@ function Select-WingetPackage {
     }
     
     # Parse table rows starting after the header
-    $skipNextLine = $false
     for ($i = $headerLineIndex + 1; $i -lt $SearchOutput.Count; $i++) {
         $line = $SearchOutput[$i]
         
         # Skip separator lines (dashes) - these come right after the header
         if ($line -match "^-+$") {
-            $skipNextLine = $false
             continue
         }
         
@@ -272,13 +268,42 @@ function Write-Success {
     Write-Host "[SUCCESS] $Message" -ForegroundColor Green
 }
 
-function Write-Error {
+function Write-ErrorMessage {
     param([string]$Message)
     Write-Host "[ERROR] $Message" -ForegroundColor Red
 }
 
+# Function to detect image mime type from file signature
+function Get-ImageMimeType {
+    param(
+        [Parameter(Mandatory = $true)]
+        [byte[]]$Bytes
+    )
+
+    if (-not $Bytes -or $Bytes.Length -lt 4) {
+        return $null
+    }
+
+    # PNG: 89 50 4E 47
+    if ($Bytes[0] -eq 0x89 -and $Bytes[1] -eq 0x50 -and $Bytes[2] -eq 0x4E -and $Bytes[3] -eq 0x47) {
+        return "image/png"
+    }
+
+    # JPEG: FF D8 FF
+    if ($Bytes.Length -ge 3 -and $Bytes[0] -eq 0xFF -and $Bytes[1] -eq 0xD8 -and $Bytes[2] -eq 0xFF) {
+        return "image/jpeg"
+    }
+
+    # GIF: 47 49 46
+    if ($Bytes.Length -ge 3 -and $Bytes[0] -eq 0x47 -and $Bytes[1] -eq 0x49 -and $Bytes[2] -eq 0x46) {
+        return "image/gif"
+    }
+
+    return $null
+}
+
 # Function to extract icon from executable
-function Extract-IconFromExe {
+function Get-IconFromExe {
     param(
         [string]$ExePath,
         [string]$OutputPath
@@ -321,7 +346,7 @@ function Extract-IconFromExe {
             }
         }
     } catch {
-        # Icon extraction failed, continue
+        Write-Verbose "Icon extraction failed for ${ExePath}: $($_.Exception.Message)"
     }
     
     return $false
@@ -455,7 +480,7 @@ function Get-LogoFromWeb {
     foreach ($url in $urlsToTry) {
         try {
             Write-Host "Trying to download logo from: $url" -ForegroundColor Cyan
-            $response = Invoke-WebRequest -Uri $url -OutFile $OutputPath -ErrorAction Stop -TimeoutSec 8
+            Invoke-WebRequest -Uri $url -OutFile $OutputPath -ErrorAction Stop -TimeoutSec 8 | Out-Null
             if (Test-Path $OutputPath) {
                 $fileInfo = Get-Item $OutputPath
                 # Check if it's actually an image (basic check - file size > 0)
@@ -494,7 +519,7 @@ function Get-LogoFromWeb {
     # Last resort: Try to extract icon from installer if it's an EXE
     if ($InstallerPath -and (Test-Path $InstallerPath) -and $InstallerPath -like "*.exe") {
         Write-Host "Attempting to extract icon from installer executable..." -ForegroundColor Cyan
-        if (Extract-IconFromExe -ExePath $InstallerPath -OutputPath $OutputPath) {
+        if (Get-IconFromExe -ExePath $InstallerPath -OutputPath $OutputPath) {
             return $true
         }
     }
@@ -519,13 +544,12 @@ function Start-WingetDownloadWithProgress {
     # Start winget download in background job
     # Use --accept-package-agreements if supported, otherwise just --accept-source-agreements
     $job = Start-Job -ScriptBlock {
-        param($pkgId, $dir, $supportsPkgAgreements)
-        if ($supportsPkgAgreements) {
-            winget download $pkgId --exact --download-directory $dir --accept-source-agreements --accept-package-agreements 2>&1
+        if ($using:supportsPackageAgreements) {
+            winget download $using:PackageId --exact --download-directory $using:DownloadDirectory --accept-source-agreements --accept-package-agreements 2>&1
         } else {
-            winget download $pkgId --exact --download-directory $dir --accept-source-agreements 2>&1
+            winget download $using:PackageId --exact --download-directory $using:DownloadDirectory --accept-source-agreements 2>&1
         }
-    } -ArgumentList $PackageId, $DownloadDirectory, $supportsPackageAgreements
+    }
     
     # Monitor download progress
     $previousSize = 0
@@ -543,7 +567,7 @@ function Start-WingetDownloadWithProgress {
             }
         
         # Try to get expected size from winget output (if available)
-        $jobOutput = Receive-Job -Job $job -ErrorAction SilentlyContinue
+        $jobOutput = Receive-Job -Job $job -Keep -ErrorAction SilentlyContinue
         if ($jobOutput -and -not $expectedSize) {
             $sizeMatch = $jobOutput | Select-String -Pattern "(\d+\.?\d*)\s*(MB|GB|KB)" | Select-Object -First 1
             if ($sizeMatch) {
@@ -634,7 +658,7 @@ function Start-WingetDownloadWithProgress {
     }
     
     # Get final job output
-    $jobOutput = Receive-Job -Job $job
+    $jobOutput = Receive-Job -Job $job -Keep
     Remove-Job -Job $job -Force
     
     # Clear progress bar
@@ -749,7 +773,7 @@ try {
     }
     
     if ($Version -and $foundVersion -ne $Version) {
-        Write-Error "Requested version $Version does not match found version $foundVersion"
+        Write-ErrorMessage "Requested version $Version does not match found version $foundVersion"
         $foundVersion = $Version
     }
     
@@ -779,7 +803,7 @@ try {
     Write-Success "Found: $displayName ($packageId) version $foundVersion"
     
 } catch {
-    Write-Error "Failed to search Winget: $_"
+    Write-ErrorMessage "Failed to search Winget: $_"
     exit 1
 }
 
@@ -841,7 +865,7 @@ try {
     }
     
 } catch {
-    Write-Error "Failed to download installer: $_"
+    Write-ErrorMessage "Failed to download installer: $_"
     exit 1
 }
 
@@ -851,7 +875,7 @@ try {
     $installerHash = (Get-FileHash -Path $installerFile.FullName -Algorithm SHA256).Hash
     Write-Success "Installer SHA256: $installerHash"
 } catch {
-    Write-Error "Failed to calculate hash: $_"
+    Write-ErrorMessage "Failed to calculate hash: $_"
     $installerHash = ""
 }
 
@@ -1239,10 +1263,17 @@ $detectionScriptBase64 = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.
 
 # Read icon file if it exists and convert to base64
 $iconBase64 = ""
+$iconMimeType = "image/png"
 if (Test-Path $iconFilePath) {
     try {
         $iconBytes = [System.IO.File]::ReadAllBytes($iconFilePath)
         $iconBase64 = [Convert]::ToBase64String($iconBytes)
+        $detectedMimeType = Get-ImageMimeType -Bytes $iconBytes
+        if ($detectedMimeType) {
+            $iconMimeType = $detectedMimeType
+        } else {
+            Write-Host "Warning: Icon file format could not be detected, defaulting to image/png" -ForegroundColor Yellow
+        }
     } catch {
         Write-Host "Warning: Could not read icon file for base64 encoding" -ForegroundColor Yellow
     }
@@ -1256,7 +1287,7 @@ $win32LobAppJson = @{
     informationUrl = $homepage
     largeIcon = if ($iconBase64) {
         @{
-            type = "image/png"
+            type = $iconMimeType
             value = $iconBase64
         }
     } else {
@@ -1307,15 +1338,15 @@ Write-Success "Created win32LobApp.json"
 
 # Step 11: Package with Content Prep Tool
 Write-Step "Step 11: Packaging with Content Prep Tool (intunewinapputil)"
+$outputDirectory = Split-Path $versionDirectory
+$intunewinFile = Join-Path $outputDirectory "$($installerFile.BaseName).intunewin"
+$packagingSucceeded = $false
 try {
     # Check if intunewinapputil is available
     $intunewinCmd = Get-Command intunewinapputil -ErrorAction SilentlyContinue
     if (-not $intunewinCmd) {
         throw "intunewinapputil not found. Is Content Prep Tool installed and in PATH?"
     }
-    
-    $outputDirectory = Split-Path $versionDirectory
-    $intunewinFile = Join-Path $outputDirectory "$($installerFile.BaseName).intunewin"
     
     # Remove existing intunewin file if it exists
     if (Test-Path $intunewinFile) {
@@ -1331,20 +1362,25 @@ try {
         Write-Success "Created IntuneWin package: $intunewinFile"
         $fileInfo = Get-Item $intunewinFile
         Write-Host "File size: $([math]::Round($fileInfo.Length / 1MB, 2)) MB" -ForegroundColor Green
+        $packagingSucceeded = $true
     } else {
         throw "Content Prep Tool failed or output file not found"
     }
     
 } catch {
-    Write-Error "Failed to create IntuneWin package: $_"
+    Write-ErrorMessage "Failed to create IntuneWin package: $_"
     Write-Host "You can manually run: intunewinapputil -c `"$versionDirectory`" -s `"$installerFileName`" -o `"$outputDirectory`" -q" -ForegroundColor Yellow
 }
 
 # Summary
 Write-Step "Summary" "Green"
-Write-Host @"
-Package created successfully!
+if ($packagingSucceeded) {
+    Write-Host "Package created successfully!" -ForegroundColor Green
+} else {
+    Write-Host "Package created with warnings (IntuneWin packaging step failed)." -ForegroundColor Yellow
+}
 
+Write-Host @"
 Package Details:
 - Application: $displayName
 - Package ID: $packageId
