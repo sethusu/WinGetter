@@ -76,14 +76,12 @@ function Select-WingetPackage {
     
     # Parse the search results
     $packages = @()
-    $inTable = $false
     $headerLineIndex = -1
     
     # Find the header line
     for ($i = 0; $i -lt $SearchOutput.Count; $i++) {
         if ($SearchOutput[$i] -match "Name\s+Id\s+Version") {
             $headerLineIndex = $i
-            $inTable = $true
             break
         }
     }
@@ -118,13 +116,11 @@ function Select-WingetPackage {
     }
     
     # Parse table rows starting after the header
-    $skipNextLine = $false
     for ($i = $headerLineIndex + 1; $i -lt $SearchOutput.Count; $i++) {
         $line = $SearchOutput[$i]
         
         # Skip separator lines (dashes) - these come right after the header
         if ($line -match "^-+$") {
-            $skipNextLine = $false
             continue
         }
         
@@ -272,7 +268,7 @@ function Write-Success {
     Write-Host "[SUCCESS] $Message" -ForegroundColor Green
 }
 
-function Write-Error {
+function Write-ErrorMessage {
     param([string]$Message)
     Write-Host "[ERROR] $Message" -ForegroundColor Red
 }
@@ -307,7 +303,7 @@ function Get-ImageMimeType {
 }
 
 # Function to extract icon from executable
-function Extract-IconFromExe {
+function Get-IconFromExe {
     param(
         [string]$ExePath,
         [string]$OutputPath
@@ -350,7 +346,7 @@ function Extract-IconFromExe {
             }
         }
     } catch {
-        # Icon extraction failed, continue
+        Write-Verbose "Icon extraction failed for ${ExePath}: $($_.Exception.Message)"
     }
     
     return $false
@@ -484,7 +480,7 @@ function Get-LogoFromWeb {
     foreach ($url in $urlsToTry) {
         try {
             Write-Host "Trying to download logo from: $url" -ForegroundColor Cyan
-            $response = Invoke-WebRequest -Uri $url -OutFile $OutputPath -ErrorAction Stop -TimeoutSec 8
+            Invoke-WebRequest -Uri $url -OutFile $OutputPath -ErrorAction Stop -TimeoutSec 8 | Out-Null
             if (Test-Path $OutputPath) {
                 $fileInfo = Get-Item $OutputPath
                 # Check if it's actually an image (basic check - file size > 0)
@@ -523,7 +519,7 @@ function Get-LogoFromWeb {
     # Last resort: Try to extract icon from installer if it's an EXE
     if ($InstallerPath -and (Test-Path $InstallerPath) -and $InstallerPath -like "*.exe") {
         Write-Host "Attempting to extract icon from installer executable..." -ForegroundColor Cyan
-        if (Extract-IconFromExe -ExePath $InstallerPath -OutputPath $OutputPath) {
+        if (Get-IconFromExe -ExePath $InstallerPath -OutputPath $OutputPath) {
             return $true
         }
     }
@@ -548,13 +544,12 @@ function Start-WingetDownloadWithProgress {
     # Start winget download in background job
     # Use --accept-package-agreements if supported, otherwise just --accept-source-agreements
     $job = Start-Job -ScriptBlock {
-        param($pkgId, $dir, $supportsPkgAgreements)
-        if ($supportsPkgAgreements) {
-            winget download $pkgId --exact --download-directory $dir --accept-source-agreements --accept-package-agreements 2>&1
+        if ($using:supportsPackageAgreements) {
+            winget download $using:PackageId --exact --download-directory $using:DownloadDirectory --accept-source-agreements --accept-package-agreements 2>&1
         } else {
-            winget download $pkgId --exact --download-directory $dir --accept-source-agreements 2>&1
+            winget download $using:PackageId --exact --download-directory $using:DownloadDirectory --accept-source-agreements 2>&1
         }
-    } -ArgumentList $PackageId, $DownloadDirectory, $supportsPackageAgreements
+    }
     
     # Monitor download progress
     $previousSize = 0
@@ -778,7 +773,7 @@ try {
     }
     
     if ($Version -and $foundVersion -ne $Version) {
-        Write-Error "Requested version $Version does not match found version $foundVersion"
+        Write-ErrorMessage "Requested version $Version does not match found version $foundVersion"
         $foundVersion = $Version
     }
     
@@ -808,7 +803,7 @@ try {
     Write-Success "Found: $displayName ($packageId) version $foundVersion"
     
 } catch {
-    Write-Error "Failed to search Winget: $_"
+    Write-ErrorMessage "Failed to search Winget: $_"
     exit 1
 }
 
@@ -870,7 +865,7 @@ try {
     }
     
 } catch {
-    Write-Error "Failed to download installer: $_"
+    Write-ErrorMessage "Failed to download installer: $_"
     exit 1
 }
 
@@ -880,7 +875,7 @@ try {
     $installerHash = (Get-FileHash -Path $installerFile.FullName -Algorithm SHA256).Hash
     Write-Success "Installer SHA256: $installerHash"
 } catch {
-    Write-Error "Failed to calculate hash: $_"
+    Write-ErrorMessage "Failed to calculate hash: $_"
     $installerHash = ""
 }
 
@@ -1373,7 +1368,7 @@ try {
     }
     
 } catch {
-    Write-Error "Failed to create IntuneWin package: $_"
+    Write-ErrorMessage "Failed to create IntuneWin package: $_"
     Write-Host "You can manually run: intunewinapputil -c `"$versionDirectory`" -s `"$installerFileName`" -o `"$outputDirectory`" -q" -ForegroundColor Yellow
 }
 
