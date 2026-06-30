@@ -727,15 +727,13 @@ function Export-BestIconFromExecutable {
     return $false
 }
 
-function Resolve-PackageIcon {
+function Get-PackageIconCandidateUrls {
     param(
         [string]$PackageId,
         [string]$DisplayName,
         [string]$Publisher,
         [string]$Homepage,
         [string]$Version,
-        [string]$OutputPath,
-        [string]$InstallerPath = $null,
         [scriptblock]$OnProgress
     )
 
@@ -764,9 +762,130 @@ function Resolve-PackageIcon {
     Add-WingetterIconCandidates -Candidates $candidateList -Urls (Get-HeuristicIconUrls -PackageId $PackageId -DisplayName $DisplayName -Publisher $Publisher -Homepage $Homepage) `
         -Source 'Heuristic' -DisplayName $DisplayName -PackageId $PackageId -Homepage $Homepage
 
-    $sortedCandidates = $candidateList | Sort-Object -Property Score -Descending
-
+    $sortedCandidates = @($candidateList | Sort-Object -Property Score -Descending)
     Write-WingetterLog -Message "Resolved $($sortedCandidates.Count) icon candidate URL(s) for $PackageId" -Level Info -OnProgress $OnProgress
+    return $sortedCandidates
+}
+
+function Resolve-PackageIconCandidates {
+    param(
+        [string]$PackageId,
+        [string]$DisplayName,
+        [string]$Publisher,
+        [string]$Homepage,
+        [string]$Version,
+        [string]$InstallerPath = $null,
+        [int]$MaximumCount = 3,
+        [string]$StagingDirectory = $null,
+        [scriptblock]$OnProgress
+    )
+
+    if ($MaximumCount -lt 1) {
+        return @()
+    }
+
+    if (-not $StagingDirectory) {
+        $StagingDirectory = Join-Path $env:TEMP ("wingetter-icon-candidates-{0}" -f ([Guid]::NewGuid().ToString('N')))
+    }
+    if (-not (Test-Path $StagingDirectory)) {
+        New-Item -ItemType Directory -Path $StagingDirectory -Force | Out-Null
+    }
+
+    $sortedCandidates = Get-PackageIconCandidateUrls -PackageId $PackageId -DisplayName $DisplayName `
+        -Publisher $Publisher -Homepage $Homepage -Version $Version -OnProgress $OnProgress
+
+    $results = [System.Collections.ArrayList]@()
+    $seenHashes = @{}
+
+    foreach ($candidate in $sortedCandidates) {
+        if ($results.Count -ge $MaximumCount) { break }
+
+        Write-WingetterLog -Message "Icon candidate [$($candidate.Source) score=$($candidate.Score)]: $($candidate.Url)" -Level Info -OnProgress $OnProgress
+        $stagingPath = Join-Path $StagingDirectory ("candidate-{0}.png" -f ($results.Count + 1))
+        if (-not (Save-PackageIconFromUrl -Url $candidate.Url -OutputPath $stagingPath -OnProgress $OnProgress)) {
+            continue
+        }
+
+        $fileHash = (Get-FileHash -Path $stagingPath -Algorithm SHA256).Hash
+        if ($seenHashes.ContainsKey($fileHash)) {
+            Remove-Item $stagingPath -Force -ErrorAction SilentlyContinue
+            continue
+        }
+        $seenHashes[$fileHash] = $true
+
+        [void]$results.Add([pscustomobject]@{
+            Path = $stagingPath
+            Url = $candidate.Url
+            Source = $candidate.Source
+            Score = $candidate.Score
+            Label = "Option $($results.Count + 1)"
+        })
+    }
+
+    if ($results.Count -lt $MaximumCount -and $InstallerPath -and (Test-Path $InstallerPath) -and $InstallerPath -like '*.exe') {
+        $exeCandidatePath = Join-Path $StagingDirectory 'candidate-installer.png'
+        if (Export-BestIconFromExecutable -ExePath $InstallerPath -OutputPath $exeCandidatePath -OnProgress $OnProgress) {
+            $fileHash = (Get-FileHash -Path $exeCandidatePath -Algorithm SHA256).Hash
+            if (-not $seenHashes.ContainsKey($fileHash)) {
+                [void]$results.Add([pscustomobject]@{
+                    Path = $exeCandidatePath
+                    Url = $InstallerPath
+                    Source = 'Installer'
+                    Score = 50
+                    Label = "Option $($results.Count + 1)"
+                })
+            } else {
+                Remove-Item $exeCandidatePath -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+
+    if ($results.Count -eq 0) {
+        Write-WingetterLog -Message "No icon candidates could be downloaded for $PackageId" -Level Warning -OnProgress $OnProgress
+    } else {
+        Write-WingetterLog -Message "Downloaded $($results.Count) icon candidate(s) for $PackageId" -Level Success -OnProgress $OnProgress
+    }
+
+    return @($results)
+}
+
+function Set-WingetterPackageIconFiles {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SourceIconPath,
+        [Parameter(Mandatory = $true)]
+        [string]$LogoFilePath,
+        [Parameter(Mandatory = $true)]
+        [string]$IconFilePath
+    )
+
+    if (-not (Test-Path $SourceIconPath)) {
+        throw "Icon file not found: $SourceIconPath"
+    }
+
+    $logoDirectory = Split-Path $LogoFilePath -Parent
+    if (-not (Test-Path $logoDirectory)) {
+        New-Item -ItemType Directory -Path $logoDirectory -Force | Out-Null
+    }
+
+    Copy-Item -Path $SourceIconPath -Destination $LogoFilePath -Force
+    Copy-Item -Path $SourceIconPath -Destination $IconFilePath -Force
+}
+
+function Resolve-PackageIcon {
+    param(
+        [string]$PackageId,
+        [string]$DisplayName,
+        [string]$Publisher,
+        [string]$Homepage,
+        [string]$Version,
+        [string]$OutputPath,
+        [string]$InstallerPath = $null,
+        [scriptblock]$OnProgress
+    )
+
+    $sortedCandidates = Get-PackageIconCandidateUrls -PackageId $PackageId -DisplayName $DisplayName `
+        -Publisher $Publisher -Homepage $Homepage -Version $Version -OnProgress $OnProgress
 
     foreach ($candidate in $sortedCandidates) {
         Write-WingetterLog -Message "Icon candidate [$($candidate.Source) score=$($candidate.Score)]: $($candidate.Url)" -Level Info -OnProgress $OnProgress
