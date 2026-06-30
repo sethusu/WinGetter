@@ -1,25 +1,18 @@
-# Example usage script for Wingetter
-# This file demonstrates various ways to use the Create-IntuneWinFromWinget.ps1 script
+# Wingetter Example Usage
 
-# Example 1: Basic usage with app name
-Write-Host "Example 1: Basic usage" -ForegroundColor Cyan
-.\Create-IntuneWinFromWinget.ps1 -AppName "MaximaTeam.Maxima"
+# Launch the graphical interface (recommended)
+.\Create-IntuneWinFromWinget.ps1 -Gui
+# or directly:
+.\Show-WingetterGui.ps1
 
-# Example 2: With specific version
-Write-Host "`nExample 2: With specific version" -ForegroundColor Cyan
-.\Create-IntuneWinFromWinget.ps1 -AppName "MaximaTeam.Maxima" -Version "5.47.0"
+# Interactive CLI mode
+.\Create-IntuneWinFromWinget.ps1
 
-# Example 3: With custom output path
-Write-Host "`nExample 3: With custom output path" -ForegroundColor Cyan
-.\Create-IntuneWinFromWinget.ps1 -AppName "MaximaTeam.Maxima" -OutputPath "C:\IntunePackages"
+# Command line with package ID
+.\Create-IntuneWinFromWinget.ps1 -AppName "Google.Chrome"
 
-# Example 4: With custom icon
-Write-Host "`nExample 4: With custom icon" -ForegroundColor Cyan
-.\Create-IntuneWinFromWinget.ps1 -AppName "MaximaTeam.Maxima" -IconPath "D:\Intoon In Progress\Maxima\MaximaTeam.Maxima\logo.png"
+# With specific version and output path
+.\Create-IntuneWinFromWinget.ps1 -AppName "7zip.7zip" -Version "24.09" -OutputPath "C:\IntunePackages"
 
-# Example 5: Other popular applications
-Write-Host "`nExample 5: Other applications" -ForegroundColor Cyan
-# .\Create-IntuneWinFromWinget.ps1 -AppName "Google.Chrome"
-# .\Create-IntuneWinFromWinget.ps1 -AppName "7zip.7zip"
-# .\Create-IntuneWinFromWinget.ps1 -AppName "Mozilla.Firefox"
-# .\Create-IntuneWinFromWinget.ps1 -AppName "Microsoft.VisualStudioCode"
+# With custom icon
+.\Create-IntuneWinFromWinget.ps1 -AppName "JetBrains.WebStorm" -IconPath "C:\Icons\webstorm.png"

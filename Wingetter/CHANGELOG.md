@@ -1,5 +1,20 @@
 # Wingetter Changelog
 
+## Version 2.0 - 2026-06-30
+
+### New Features
+- **WinForms GUI** (`Show-WingetterGui.ps1`) with search, radio-button package selection, output folder picker, live progress bar, activity log, and icon preview
+- **`-Gui` switch** on `Create-IntuneWinFromWinget.ps1` to launch the graphical interface
+- **`install.ps1`** generation with Intune Win32 best practices (transcript logging, return code handling)
+- **`README.md`** with complete Intune portal upload reference in Markdown
+- **`packaging.log`** and **`packaging-failure.log`** for packaging run diagnostics
+- **`Wingetter.Core.psm1`** shared module used by both CLI and GUI
+
+### Changes
+- Refactored monolithic script into module + thin CLI/GUI launchers
+- Default output path changed to `Documents\Wingetter Output`
+- Install/uninstall commands in metadata now reference generated PowerShell scripts
+
 ## Version 1.2 - 2026-01-22
 
 ### New Features
