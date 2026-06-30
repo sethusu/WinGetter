@@ -10,6 +10,12 @@
 - Search dialog always shown with radio buttons, even for a single result
 - Selected search version auto-fills version field and is passed to packaging
 - Partial packaging success (metadata without `.intunewin`) surfaced in the GUI
+- Tiered icon resolution with homepage favicon/ICO support and GUI icon preview on app selection
+
+### Icon Resolution
+- New tiered icon resolver: winget show metadata, winget-pkgs manifest URLs, homepage favicon/apple-touch-icon/og:image, known publisher patterns, heuristics, then enhanced EXE extraction
+- ICO favicons (e.g. Steam) are converted to PNG for Intune upload
+- GUI loads icon preview after app selection
 
 ### New Features
 - **WPF Graphical Interface** (`Gui/Start-WingetterGui.ps1`)

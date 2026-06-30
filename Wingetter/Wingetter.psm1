@@ -2,6 +2,7 @@ $privateScripts = @(
     'Write-WingetterLog.ps1'
     'Settings.ps1'
     'Winget.ps1'
+    'IconResolution.ps1'
     'Assets.ps1'
     'Scripts.ps1'
     'Packaging.ps1'
@@ -22,4 +23,5 @@ Export-ModuleMember -Function @(
     'Get-WingetterSettings'
     'Save-WingetterSettings'
     'Test-WingetterPrerequisites'
+    'Resolve-PackageIcon'
 )
