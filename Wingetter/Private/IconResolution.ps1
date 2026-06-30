@@ -20,6 +20,43 @@ function Get-SiteRootIconUrls {
     }
 }
 
+function Initialize-WingetterWebClient {
+    if ([Net.ServicePointManager]::SecurityProtocol -band [Net.SecurityProtocolType]::Tls12 -eq 0) {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
+    }
+
+    $client = New-Object System.Net.WebClient
+    $client.Headers.Add('User-Agent', (Get-WingetterWebUserAgent))
+    return $client
+}
+
+function Get-WingetterWebString {
+    param([string]$Url)
+
+    try {
+        $client = Initialize-WingetterWebClient
+        return $client.DownloadString($Url)
+    } catch {
+        return $null
+    }
+}
+
+function Get-WingetterDomainFromUrl {
+    param([string]$Url)
+
+    if ([string]::IsNullOrWhiteSpace($Url)) { return $null }
+
+    try {
+        $hostName = ([Uri]$Url).Host
+        if ($hostName -like 'www.*') {
+            $hostName = $hostName.Substring(4)
+        }
+        return $hostName
+    } catch {
+        return $null
+    }
+}
+
 function Get-IconBytesFromUrl {
     param(
         [string]$Url,
@@ -28,12 +65,7 @@ function Get-IconBytesFromUrl {
 
     $tempFile = [System.IO.Path]::ChangeExtension([System.IO.Path]::GetTempFileName(), '.icon')
     try {
-        if ([Net.ServicePointManager]::SecurityProtocol -band [Net.SecurityProtocolType]::Tls12 -eq 0) {
-            [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-        }
-
-        $client = New-Object System.Net.WebClient
-        $client.Headers.Add('User-Agent', (Get-WingetterWebUserAgent))
+        $client = Initialize-WingetterWebClient
         $client.DownloadFile($Url, $tempFile)
 
         if (-not (Test-Path $tempFile)) { return $null }
@@ -149,8 +181,12 @@ function Save-PackageIconFromUrl {
         }
 
         if (Save-BytesAsPngIcon -Bytes $bytes -OutputPath $OutputPath) {
-            Write-WingetterLog -Message "Downloaded icon from $Url" -Level Success -OnProgress $OnProgress
-            return $true
+            if (Test-SavedIconQuality -OutputPath $OutputPath) {
+                Write-WingetterLog -Message "Downloaded icon from $Url" -Level Success -OnProgress $OnProgress
+                return $true
+            }
+
+            Write-WingetterLog -Message "Rejected low-quality icon from $Url" -Level Warning -OnProgress $OnProgress
         }
     } catch {
         Write-WingetterLog -Message "Icon URL failed ($Url): $($_.Exception.Message)" -Level Warning -OnProgress $OnProgress
@@ -160,6 +196,118 @@ function Save-PackageIconFromUrl {
         Remove-Item $OutputPath -Force -ErrorAction SilentlyContinue
     }
     return $false
+}
+
+function Test-SavedIconQuality {
+    param(
+        [string]$OutputPath,
+        [int]$MinimumSize = 48
+    )
+
+    if (-not (Test-Path $OutputPath)) { return $false }
+
+    try {
+        Add-Type -AssemblyName System.Drawing -ErrorAction Stop
+        $image = [System.Drawing.Image]::FromFile($OutputPath)
+        try {
+            return ($image.Width -ge $MinimumSize -and $image.Height -ge $MinimumSize)
+        } finally {
+            $image.Dispose()
+        }
+    } catch {
+        return $false
+    }
+}
+
+function Test-IsRejectedIconUrl {
+    param(
+        [string]$Url,
+        [string]$PackageId,
+        [string]$Homepage
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Url)) { return $true }
+
+    $allowGithub = ($PackageId -like 'Git.*' -or $Homepage -like '*github.com*')
+    if (-not $allowGithub -and $Url -match '(?i)github\.com|githubusercontent\.com|githubassets\.com|github\.io') {
+        return $true
+    }
+
+    if ($Url -match '(?i)duckduckgo\.com/favicon|google\.com/s2/favicons|opengraph\.githubassets\.com') {
+        return $true
+    }
+
+    return $false
+}
+
+function Get-IconUrlPriorityScore {
+    param(
+        [string]$Url,
+        [string]$DisplayName,
+        [string]$PackageId,
+        [ValidateSet('Known', 'Wikimedia', 'Clearbit', 'WingetShow', 'WingetManifest', 'WebSearch', 'Homepage', 'Heuristic', 'Favicon')]
+        [string]$Source
+    )
+
+    $score = switch ($Source) {
+        'Known' { 1000 }
+        'Wikimedia' { 920 }
+        'Clearbit' { 880 }
+        'WingetShow' { 860 }
+        'WingetManifest' { 820 }
+        'WebSearch' { 780 }
+        'Homepage' { 640 }
+        'Heuristic' { 220 }
+        'Favicon' { 120 }
+        default { 0 }
+    }
+
+    if ($Url -match '\.png($|\?)') { $score += 90 }
+    if ($Url -match '\.(jpg|jpeg)($|\?)') { $score += 70 }
+    if ($Url -match '(?i)(logo|brand|app[-_]?icon)') { $score += 45 }
+    if ($Url -match '(?i)favicon') { $score -= 60 }
+    if ($Url -match '\.ico($|\?)') { $score -= 40 }
+    if ($Url -match '\.svg($|\?)') { $score -= 25 }
+    if ($Url -match 'upload\.wikimedia\.org') { $score += 55 }
+    if ($Url -match 'logo\.clearbit\.com') { $score += 50 }
+
+    $appToken = ($PackageId -split '\.')[-1]
+    if ($DisplayName -and $Url -match [regex]::Escape($DisplayName)) { $score += 35 }
+    if ($appToken -and $Url -match "(?i)$([regex]::Escape($appToken))") { $score += 25 }
+
+    return $score
+}
+
+function Add-WingetterIconCandidates {
+    param(
+        [System.Collections.ArrayList]$Candidates,
+        [string[]]$Urls,
+        [string]$Source,
+        [string]$DisplayName,
+        [string]$PackageId,
+        [string]$Homepage
+    )
+
+    foreach ($url in ($Urls | Where-Object { $_ })) {
+        if (Test-IsRejectedIconUrl -Url $url -PackageId $PackageId -Homepage $Homepage) {
+            continue
+        }
+
+        $score = Get-IconUrlPriorityScore -Url $url -DisplayName $DisplayName -PackageId $PackageId -Source $Source
+        $existing = $Candidates | Where-Object { $_.Url -eq $url } | Select-Object -First 1
+        if ($existing -and $existing.Score -ge $score) {
+            continue
+        }
+        if ($existing) {
+            [void]$Candidates.Remove($existing)
+        }
+
+        [void]$Candidates.Add([pscustomobject]@{
+            Url = $url
+            Score = $score
+            Source = $Source
+        })
+    }
 }
 
 function Get-IconUrlsFromWingetShow {
@@ -212,9 +360,8 @@ function Get-IconUrlsFromWingetManifest {
     $urls = @()
     foreach ($manifestUrl in $manifestPaths) {
         try {
-            $client = New-Object System.Net.WebClient
-            $client.Headers.Add('User-Agent', (Get-WingetterWebUserAgent))
-            $yaml = $client.DownloadString($manifestUrl)
+            $yaml = Get-WingetterWebString -Url $manifestUrl
+            if (-not $yaml) { continue }
             if ($yaml -match '(?m)^PackageUrl:\s*(.+)$') {
                 $packageUrl = $matches[1].Trim()
                 $urls += Get-IconUrlsFromHomepage -Homepage $packageUrl
@@ -254,9 +401,8 @@ function Get-IconUrlsFromHomepage {
     )
 
     try {
-        $client = New-Object System.Net.WebClient
-        $client.Headers.Add('User-Agent', (Get-WingetterWebUserAgent))
-        $html = $client.DownloadString($Homepage)
+        $html = Get-WingetterWebString -Url $Homepage
+        if (-not $html) { return ($urls | Select-Object -Unique) }
 
         foreach ($pattern in @(
             '(?i)<link[^>]+rel=["'']apple-touch-icon[^>]+href=["'']([^"'']+)["'']'
@@ -290,6 +436,8 @@ function Get-KnownPackageIconUrls {
     switch -Wildcard ($PackageId) {
         'Valve.Steam' {
             $urls += @(
+                'https://upload.wikimedia.org/wikipedia/commons/thumb/8/83/Steam_icon_logo.svg/330px-Steam_icon_logo.svg.png'
+                'https://upload.wikimedia.org/wikipedia/commons/thumb/c/c1/Steam_2016_logo_black.svg/512px-Steam_2016_logo_black.svg.png'
                 'https://store.steampowered.com/favicon.ico'
             )
         }
@@ -360,11 +508,11 @@ function Get-HeuristicIconUrls {
         )
     }
 
-    $orgName = if ($githubOrg) { $githubOrg } else { ($PackageId -split '\.')[0] }
-    $projectName = if ($githubRepo) { $githubRepo } else { ($PackageId -split '\.')[-1] }
-    foreach ($branch in @('main', 'master')) {
-        foreach ($path in @('logo.png', 'icon.png', 'assets/logo.png', 'assets/icon.png', 'img/logo.png', 'img/icon.png', 'docs/logo.png')) {
-            $urls += "https://raw.githubusercontent.com/$orgName/$projectName/$branch/$path"
+    if ($githubOrg -and $githubRepo) {
+        foreach ($branch in @('main', 'master')) {
+            foreach ($path in @('logo.png', 'icon.png', 'assets/logo.png', 'assets/icon.png', 'img/logo.png', 'img/icon.png', 'docs/logo.png')) {
+                $urls += "https://raw.githubusercontent.com/$githubOrg/$githubRepo/$branch/$path"
+            }
         }
     }
 
@@ -372,6 +520,136 @@ function Get-HeuristicIconUrls {
         $homepageBase = $Homepage.TrimEnd('/')
         foreach ($path in @('logo.png', 'icon.png', 'images/logo.png', 'assets/logo.png', 'static/logo.png')) {
             $urls += "$homepageBase/$path"
+        }
+    }
+
+    return $urls | Select-Object -Unique
+}
+
+function Get-IconUrlsFromWikimedia {
+    param(
+        [string]$DisplayName,
+        [string]$PackageId
+    )
+
+    $urls = @()
+    $appName = if ($DisplayName) { $DisplayName.Trim() } else { ($PackageId -split '\.')[-1] }
+    if ([string]::IsNullOrWhiteSpace($appName)) { return @() }
+
+    $queries = @(
+        "$appName logo"
+        "$appName icon"
+        "$appName software logo"
+    )
+
+    foreach ($query in ($queries | Select-Object -Unique)) {
+        try {
+            $encodedQuery = [Uri]::EscapeDataString($query)
+            $apiUrl = "https://commons.wikimedia.org/w/api.php?action=query&generator=search&gsrsearch=$encodedQuery&gsrnamespace=6&gsrlimit=10&prop=imageinfo&iiprop=url&iiurlwidth=512&format=json"
+            $jsonText = Get-WingetterWebString -Url $apiUrl
+            if (-not $jsonText) { continue }
+
+            $data = $jsonText | ConvertFrom-Json
+            if (-not $data.query -or -not $data.query.pages) { continue }
+
+            foreach ($pageProperty in $data.query.pages.PSObject.Properties) {
+                $page = $pageProperty.Value
+                if (-not $page.imageinfo) { continue }
+
+                $title = [string]$page.title
+                $titleLower = $title.ToLower()
+                $appLower = $appName.ToLower()
+
+                if ($titleLower -notmatch 'logo|icon' -and $titleLower -notmatch [regex]::Escape($appLower)) {
+                    continue
+                }
+
+                if ($appName.Length -le 5 -and $titleLower -notmatch '(?i)\bicon\b|\blogo\b') {
+                    continue
+                }
+
+                $imageInfo = $page.imageinfo[0]
+                $imageUrl = $null
+
+                if ($title -match '\.svg$' -and $imageInfo.thumburl) {
+                    $imageUrl = $imageInfo.thumburl
+                } elseif ($imageInfo.url -match '\.(png|jpg|jpeg)($|\?)') {
+                    $imageUrl = $imageInfo.url
+                } elseif ($imageInfo.thumburl -match '\.(png|jpg|jpeg)($|\?)') {
+                    $imageUrl = $imageInfo.thumburl
+                }
+
+                if ($imageUrl) {
+                    $urls += $imageUrl
+                }
+            }
+        } catch {
+            Write-Verbose "Wikimedia icon search failed for '$query': $_"
+        }
+    }
+
+    return $urls | Select-Object -Unique
+}
+
+function Get-IconUrlsFromClearbit {
+    param(
+        [string]$Homepage,
+        [string]$PublisherUrl = $null
+    )
+
+    $urls = @()
+    foreach ($site in @($Homepage, $PublisherUrl)) {
+        $domain = Get-WingetterDomainFromUrl -Url $site
+        if ($domain -and $domain -notlike 'github.com' -and $domain -notlike 'raw.githubusercontent.com') {
+            $urls += "https://logo.clearbit.com/$domain"
+        }
+    }
+
+    return $urls | Select-Object -Unique
+}
+
+function Get-IconUrlsFromWebSearch {
+    param(
+        [string]$DisplayName,
+        [string]$PackageId,
+        [string]$Publisher
+    )
+
+    $urls = @()
+    $appName = if ($DisplayName) { $DisplayName.Trim() } else { ($PackageId -split '\.')[-1] }
+    if ([string]::IsNullOrWhiteSpace($appName)) { return @() }
+
+    $publisherText = if ($Publisher) { $Publisher.Trim() } else { '' }
+    $searchTerms = @(
+        "$appName $publisherText logo png"
+        "$appName app icon png"
+        "$appName logo transparent png"
+    )
+
+    foreach ($term in ($searchTerms | Select-Object -Unique)) {
+        try {
+            $encodedQuery = [Uri]::EscapeDataString($term)
+            $searchUrl = "https://www.bing.com/images/search?q=$encodedQuery&first=1&form=HDRSC2"
+            $html = Get-WingetterWebString -Url $searchUrl
+            if (-not $html) { continue }
+
+            foreach ($pattern in @(
+                '(?i)murl&quot;:&quot;(https?://[^&]+?\.(?:png|jpg|jpeg))'
+                '(?i)"murl":"(https?://[^"]+?\.(?:png|jpg|jpeg))"'
+                '(?i)turl&quot;:&quot;(https?://[^&]+?\.(?:png|jpg|jpeg))'
+            )) {
+                foreach ($match in [regex]::Matches($html, $pattern)) {
+                    $urls += $match.Groups[1].Value
+                }
+            }
+
+            foreach ($match in [regex]::Matches($html, '(?i)(https?://[^\s"<>]+\.png)')) {
+                if ($match.Value -match '(?i)logo|icon|brand|app') {
+                    $urls += $match.Value
+                }
+            }
+        } catch {
+            Write-Verbose "Web image search failed for '$term': $_"
         }
     }
 
@@ -461,22 +739,38 @@ function Resolve-PackageIcon {
         [scriptblock]$OnProgress
     )
 
-    $candidateUrls = @()
-    # Known-good publisher URLs first (most reliable for common apps like Steam)
-    $candidateUrls += Get-KnownPackageIconUrls -PackageId $PackageId -Publisher $Publisher -Homepage $Homepage
-    $candidateUrls += Get-IconUrlsFromWingetShow -PackageId $PackageId -Version $Version
-    $candidateUrls += Get-IconUrlsFromWingetManifest -PackageId $PackageId -Version $Version
+    $candidateList = [System.Collections.ArrayList]@()
+
+    Add-WingetterIconCandidates -Candidates $candidateList -Urls (Get-KnownPackageIconUrls -PackageId $PackageId -Publisher $Publisher -Homepage $Homepage) `
+        -Source 'Known' -DisplayName $DisplayName -PackageId $PackageId -Homepage $Homepage
+    Add-WingetterIconCandidates -Candidates $candidateList -Urls (Get-IconUrlsFromWikimedia -DisplayName $DisplayName -PackageId $PackageId) `
+        -Source 'Wikimedia' -DisplayName $DisplayName -PackageId $PackageId -Homepage $Homepage
+    Add-WingetterIconCandidates -Candidates $candidateList -Urls (Get-IconUrlsFromClearbit -Homepage $Homepage) `
+        -Source 'Clearbit' -DisplayName $DisplayName -PackageId $PackageId -Homepage $Homepage
+    Add-WingetterIconCandidates -Candidates $candidateList -Urls (Get-IconUrlsFromWingetShow -PackageId $PackageId -Version $Version) `
+        -Source 'WingetShow' -DisplayName $DisplayName -PackageId $PackageId -Homepage $Homepage
+    Add-WingetterIconCandidates -Candidates $candidateList -Urls (Get-IconUrlsFromWingetManifest -PackageId $PackageId -Version $Version) `
+        -Source 'WingetManifest' -DisplayName $DisplayName -PackageId $PackageId -Homepage $Homepage
+    Add-WingetterIconCandidates -Candidates $candidateList -Urls (Get-IconUrlsFromWebSearch -DisplayName $DisplayName -PackageId $PackageId -Publisher $Publisher) `
+        -Source 'WebSearch' -DisplayName $DisplayName -PackageId $PackageId -Homepage $Homepage
+
     if ($Homepage) {
-        $candidateUrls += Get-IconUrlsFromHomepage -Homepage $Homepage
+        Add-WingetterIconCandidates -Candidates $candidateList -Urls (Get-IconUrlsFromHomepage -Homepage $Homepage) `
+            -Source 'Homepage' -DisplayName $DisplayName -PackageId $PackageId -Homepage $Homepage
+        Add-WingetterIconCandidates -Candidates $candidateList -Urls (Get-SiteRootIconUrls -Url $Homepage) `
+            -Source 'Favicon' -DisplayName $DisplayName -PackageId $PackageId -Homepage $Homepage
     }
-    $candidateUrls += Get-HeuristicIconUrls -PackageId $PackageId -DisplayName $DisplayName -Publisher $Publisher -Homepage $Homepage
 
-    $candidateUrls = $candidateUrls | Where-Object { $_ -and $_ -match '^https?://' } | Select-Object -Unique
+    Add-WingetterIconCandidates -Candidates $candidateList -Urls (Get-HeuristicIconUrls -PackageId $PackageId -DisplayName $DisplayName -Publisher $Publisher -Homepage $Homepage) `
+        -Source 'Heuristic' -DisplayName $DisplayName -PackageId $PackageId -Homepage $Homepage
 
-    Write-WingetterLog -Message "Resolved $($candidateUrls.Count) icon candidate URL(s) for $PackageId" -Level Info -OnProgress $OnProgress
+    $sortedCandidates = $candidateList | Sort-Object -Property Score -Descending
 
-    foreach ($url in $candidateUrls) {
-        if (Save-PackageIconFromUrl -Url $url -OutputPath $OutputPath -OnProgress $OnProgress) {
+    Write-WingetterLog -Message "Resolved $($sortedCandidates.Count) icon candidate URL(s) for $PackageId" -Level Info -OnProgress $OnProgress
+
+    foreach ($candidate in $sortedCandidates) {
+        Write-WingetterLog -Message "Icon candidate [$($candidate.Source) score=$($candidate.Score)]: $($candidate.Url)" -Level Info -OnProgress $OnProgress
+        if (Save-PackageIconFromUrl -Url $candidate.Url -OutputPath $OutputPath -OnProgress $OnProgress) {
             return $true
         }
     }
