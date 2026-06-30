@@ -1,0 +1,131 @@
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Wingetter - Intune Win32 Package Creator"
+        Height="760" Width="980"
+        MinHeight="640" MinWidth="860"
+        WindowStartupLocation="CenterScreen"
+        Background="#F5F7FA">
+  <Grid Margin="16">
+    <Grid.RowDefinitions>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="*"/>
+      <RowDefinition Height="Auto"/>
+      <RowDefinition Height="Auto"/>
+    </Grid.RowDefinitions>
+
+    <Border Grid.Row="0" Background="White" CornerRadius="8" Padding="16" Margin="0,0,0,12"
+            BorderBrush="#D8DEE9" BorderThickness="1">
+      <StackPanel>
+        <TextBlock Text="Wingetter" FontSize="24" FontWeight="SemiBold" Foreground="#1B2A41"/>
+        <TextBlock Text="Create Intune Win32 packages from Winget applications" Foreground="#5C6B7A" Margin="0,4,0,0"/>
+        <TextBlock x:Name="PrereqStatusText" Text="Checking prerequisites..." Foreground="#5C6B7A" Margin="0,8,0,0" TextWrapping="Wrap"/>
+      </StackPanel>
+    </Border>
+
+    <Border Grid.Row="1" Background="White" CornerRadius="8" Padding="16" Margin="0,0,0,12"
+            BorderBrush="#D8DEE9" BorderThickness="1">
+      <Grid>
+        <Grid.ColumnDefinitions>
+          <ColumnDefinition Width="*"/>
+          <ColumnDefinition Width="Auto"/>
+          <ColumnDefinition Width="Auto"/>
+        </Grid.ColumnDefinitions>
+        <Grid.RowDefinitions>
+          <RowDefinition Height="Auto"/>
+          <RowDefinition Height="Auto"/>
+          <RowDefinition Height="Auto"/>
+          <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" Grid.Column="0" Text="Search Winget" FontWeight="SemiBold" Margin="0,0,0,6"/>
+        <StackPanel Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="3" Orientation="Horizontal">
+          <TextBox x:Name="SearchBox" Width="420" Height="30" VerticalContentAlignment="Center"
+                   ToolTip="Enter app name or Winget package ID (e.g. Google.Chrome)"/>
+          <Button x:Name="SearchButton" Content="Search" Width="90" Height="30" Margin="8,0,0,0"/>
+          <Button x:Name="SelectAppButton" Content="Choose App..." Width="110" Height="30" Margin="8,0,0,0"/>
+        </StackPanel>
+
+        <TextBlock Grid.Row="2" Grid.Column="0" Grid.ColumnSpan="3" x:Name="SelectedAppText"
+                   Text="No application selected." Foreground="#5C6B7A" Margin="0,10,0,0" TextWrapping="Wrap"/>
+
+        <TextBlock Grid.Row="3" Grid.Column="0" Text="Output destination" FontWeight="SemiBold" Margin="0,14,0,6"/>
+        <DockPanel Grid.Row="3" Grid.Column="0" Grid.ColumnSpan="2" Margin="0,36,0,0" LastChildFill="True">
+          <Button x:Name="BrowseOutputButton" Content="Browse..." Width="90" Height="30" DockPanel.Dock="Right" Margin="8,0,0,0"/>
+          <TextBox x:Name="OutputPathBox" Height="30" VerticalContentAlignment="Center"/>
+        </DockPanel>
+        <StackPanel Grid.Row="3" Grid.Column="2" Orientation="Horizontal" Margin="8,36,0,0" VerticalAlignment="Top">
+          <TextBlock Text="Version:" VerticalAlignment="Center" Margin="0,0,6,0"/>
+          <TextBox x:Name="VersionBox" Width="110" Height="30" VerticalContentAlignment="Center"
+                   ToolTip="Optional. Leave blank for latest version."/>
+        </StackPanel>
+      </Grid>
+    </Border>
+
+    <Grid Grid.Row="2">
+      <Grid.ColumnDefinitions>
+        <ColumnDefinition Width="2*"/>
+        <ColumnDefinition Width="*"/>
+      </Grid.ColumnDefinitions>
+
+      <Border Grid.Column="0" Background="White" CornerRadius="8" Padding="16" Margin="0,0,8,0"
+              BorderBrush="#D8DEE9" BorderThickness="1">
+        <Grid>
+          <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+          </Grid.RowDefinitions>
+
+          <TextBlock Grid.Row="0" Text="Packaging Progress" FontWeight="SemiBold"/>
+          <ProgressBar Grid.Row="1" x:Name="ProgressBar" Height="18" Margin="0,10,0,8" Minimum="0" Maximum="100"/>
+          <TextBlock Grid.Row="2" x:Name="ProgressStatusText" Text="Ready." Foreground="#5C6B7A" Margin="0,0,0,8"/>
+
+          <ListBox Grid.Row="3" x:Name="StepList" BorderThickness="0" Background="Transparent">
+            <ListBox.ItemTemplate>
+              <DataTemplate>
+                <StackPanel Orientation="Horizontal" Margin="0,2">
+                  <TextBlock Text="{Binding Icon}" Width="22" FontFamily="Segoe UI Symbol"/>
+                  <TextBlock Text="{Binding Text}" TextWrapping="Wrap"/>
+                </StackPanel>
+              </DataTemplate>
+            </ListBox.ItemTemplate>
+          </ListBox>
+        </Grid>
+      </Border>
+
+      <Border Grid.Column="1" Background="White" CornerRadius="8" Padding="16"
+              BorderBrush="#D8DEE9" BorderThickness="1">
+        <Grid>
+          <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+          </Grid.RowDefinitions>
+          <TextBlock Grid.Row="0" Text="Icon Preview" FontWeight="SemiBold"/>
+          <Border Grid.Row="1" BorderBrush="#D8DEE9" BorderThickness="1" Margin="0,10,0,10" Background="#FAFBFC">
+            <Image x:Name="IconPreview" Stretch="Uniform" Margin="12"/>
+          </Border>
+          <TextBlock Grid.Row="2" x:Name="IconStatusText" Text="Icon will appear after packaging or when a custom icon is selected."
+                     TextWrapping="Wrap" Foreground="#5C6B7A" Margin="0,0,0,8"/>
+          <Button Grid.Row="3" x:Name="BrowseIconButton" Content="Custom Icon..." Height="30"/>
+        </Grid>
+      </Border>
+    </Grid>
+
+    <Border Grid.Row="3" Background="White" CornerRadius="8" Padding="12" Margin="0,12,0,12"
+            BorderBrush="#D8DEE9" BorderThickness="1">
+      <ScrollViewer VerticalScrollBarVisibility="Auto" MaxHeight="120">
+        <TextBox x:Name="LogTextBox" IsReadOnly="True" BorderThickness="0" Background="Transparent"
+                 TextWrapping="Wrap" FontFamily="Consolas" FontSize="12"/>
+      </ScrollViewer>
+    </Border>
+
+    <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right">
+      <Button x:Name="OpenOutputButton" Content="Open Output Folder" Width="140" Height="34" Margin="0,0,8,0" IsEnabled="False"/>
+      <Button x:Name="PackButton" Content="Create Package" Width="140" Height="34" FontWeight="SemiBold"/>
+    </StackPanel>
+  </Grid>
+</Window>
