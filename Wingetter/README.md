@@ -151,6 +151,7 @@ The uninstall script:
 - Ensure Winget is installed: `winget --version`
 - Check if the app name is correct
 - Try using the exact package ID instead of search term
+- Search now uses multiple fallback strategies (`--id --exact`, `--name`, generic query, and `--id`) to better match expected results
 - The script automatically accepts source and package agreements. If you see prompt errors, ensure you're running the latest version of Winget that supports `--accept-package-agreements`
 
 ### "intunewinapputil not found"

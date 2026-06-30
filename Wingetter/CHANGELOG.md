@@ -1,5 +1,20 @@
 # Wingetter Changelog
 
+## Version 1.3 - 2026-06-30
+
+### Search Robustness
+- **Hardened Winget search parsing** by splitting parsing into `WingetSearchParser.ps1` and using header-aware/fallback parsing for table output
+- **Improved search fallback behavior** by trying multiple strategies (`--id --exact`, `--name`, query, and `--id`) before failing
+- **Expanded package ID support** by accepting valid IDs without dots (for example Microsoft Store style IDs)
+
+### Testing
+- Added `tests/WingetSearchParser.Tests.ps1` with parsing coverage for:
+  - no-result output
+  - standard table output
+  - non-dot package IDs
+  - single-result `Found ... [Id]` output
+  - duplicate rows/noise filtering
+
 ## Version 1.2 - 2026-01-22
 
 ### New Features
