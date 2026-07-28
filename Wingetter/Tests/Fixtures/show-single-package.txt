@@ -1,0 +1,22 @@
+Found Google Chrome [Google.Chrome]
+Version: 131.0.6778.86
+Publisher: Google LLC
+Publisher Url: https://www.google.com/
+Author: Google LLC
+Moniker: chrome
+Description: A more simple, secure, and faster web browser than ever, with Google's smarts built-in.
+Homepage: https://www.google.com/chrome/
+License: Freeware
+License Url: https://www.google.com/chrome/terms/
+Privacy Url: https://policies.google.com/privacy
+Copyright: Copyright 2024 Google LLC. All rights reserved.
+Tags:
+  browser
+  chromium
+  internet
+Installer:
+  Installer Type: exe
+  Installer Url: https://dl.google.com/chrome/install/latest/chrome_installer.exe
+  Installer SHA256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+  Release Date: 2024-11-19
+  Offline Distribution Supported: true

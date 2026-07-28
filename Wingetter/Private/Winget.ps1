@@ -1,8 +1,11 @@
 function ConvertTo-WingetOutputLines {
     param($Output)
 
+    if ($null -eq $Output) {
+        return @()
+    }
     if ($Output -is [string]) {
-        return $Output -split "`n" | ForEach-Object { $_.TrimEnd("`r") }
+        return @($Output -split "`r?`n" | ForEach-Object { $_.TrimEnd("`r") })
     }
     if ($Output -is [array]) {
         return @($Output | ForEach-Object { "$_".TrimEnd("`r") })
@@ -10,124 +13,659 @@ function ConvertTo-WingetOutputLines {
     return @("$Output".TrimEnd("`r"))
 }
 
+function Test-WingetPackageId {
+    param(
+        [AllowEmptyString()]
+        [string]$Query
+    )
+
+    $trimmed = if ($null -eq $Query) { '' } else { $Query.Trim() }
+    if ([string]::IsNullOrWhiteSpace($trimmed)) {
+        return $false
+    }
+
+    # Publisher.Package style identifiers used by the community winget repository
+    return $trimmed -match '^[A-Za-z0-9][A-Za-z0-9._-]*\.[A-Za-z0-9][A-Za-z0-9._-]*$'
+}
+
+function Normalize-WingetPackageId {
+    param(
+        [AllowEmptyString()]
+        [string]$Id
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Id)) {
+        return ''
+    }
+
+    $normalizedId = $Id.Trim()
+    $normalizedId = $normalizedId -replace '\s*\.\s*', '.'
+    $normalizedId = $normalizedId -replace '\s+', ''
+    return $normalizedId
+}
+
+function Get-WingetTableColumnMap {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$HeaderLine
+    )
+
+    $columns = @('Name', 'Id', 'Version', 'Match', 'Source')
+    $map = [ordered]@{}
+
+    foreach ($column in $columns) {
+        $index = $HeaderLine.IndexOf($column, [System.StringComparison]::Ordinal)
+        if ($index -ge 0) {
+            $map[$column] = $index
+        }
+    }
+
+    if (-not $map.Contains('Name') -or -not $map.Contains('Id') -or -not $map.Contains('Version')) {
+        return $null
+    }
+
+    return $map
+}
+
+function Split-WingetTableRow {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Line,
+
+        [Parameter(Mandatory = $true)]
+        $ColumnMap
+    )
+
+    $orderedColumns = @(
+        @{ Name = 'Name'; Start = [int]$ColumnMap['Name'] }
+        @{ Name = 'Id'; Start = [int]$ColumnMap['Id'] }
+        @{ Name = 'Version'; Start = [int]$ColumnMap['Version'] }
+    )
+
+    if ($ColumnMap.Contains('Match')) {
+        $orderedColumns += @{ Name = 'Match'; Start = [int]$ColumnMap['Match'] }
+    }
+    if ($ColumnMap.Contains('Source')) {
+        $orderedColumns += @{ Name = 'Source'; Start = [int]$ColumnMap['Source'] }
+    }
+
+    $values = [ordered]@{}
+    for ($i = 0; $i -lt $orderedColumns.Count; $i++) {
+        $column = $orderedColumns[$i]
+        $start = [Math]::Max(0, $column.Start)
+        $end = if ($i -lt ($orderedColumns.Count - 1)) {
+            $orderedColumns[$i + 1].Start - 1
+        } else {
+            $Line.Length - 1
+        }
+
+        if ($end -lt $start) {
+            $end = $Line.Length - 1
+        }
+
+        if ($start -ge $Line.Length) {
+            $values[$column.Name] = ''
+            continue
+        }
+
+        $length = [Math]::Max(0, $end - $start + 1)
+        $sliceLength = [Math]::Min($length, $Line.Length - $start)
+        $values[$column.Name] = $Line.Substring($start, $sliceLength).Trim()
+    }
+
+    return $values
+}
+
+function Test-WingetSearchRow {
+    param(
+        [string]$Name,
+        [string]$Id,
+        [string]$Version
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Name) -or [string]::IsNullOrWhiteSpace($Id)) {
+        return $false
+    }
+
+    if ($Name -match '^(Name|Found|Terms|Search|No package)' -or $Id -match '^(Id|Found)$') {
+        return $false
+    }
+
+    if ($Version -match '^(Version|Match|Source)$') {
+        return $false
+    }
+
+    if ($Id.Length -lt 2) {
+        return $false
+    }
+
+    # Accept dotted community IDs and undotted MS Store product IDs (e.g. XP89DCGQ3K6VLD)
+    if ($Id -notmatch '^[A-Za-z0-9][A-Za-z0-9._…-]*$' -and $Id -notmatch '…|\.\.\.$') {
+        return $false
+    }
+
+    if ($Version -and $Version -notmatch '^[0-9A-Za-z.<>=\s_-]+$') {
+        return $false
+    }
+
+    return $true
+}
+
+function New-WingetPackageResult {
+    param(
+        [string]$Name,
+        [string]$Id,
+        [string]$Version = 'Unknown',
+        [string]$Source = '',
+        [bool]$TruncatedId = $false
+    )
+
+    return [PSCustomObject]@{
+        Name        = $Name
+        Id          = $Id
+        Version     = if ([string]::IsNullOrWhiteSpace($Version)) { 'Unknown' } else { $Version }
+        Source      = if ($null -eq $Source) { '' } else { $Source }
+        TruncatedId = $TruncatedId
+    }
+}
+
+function Get-WingetSourceFromSearchLine {
+    param(
+        [string]$Line,
+        [string]$ParsedSource = '',
+        [string]$DefaultSource = ''
+    )
+
+    # Column slicing often bleeds Match text into Source when Version is long.
+    # Prefer a clean trailing token (winget / msstore / custom source name).
+    if ($Line -match '\s([A-Za-z][A-Za-z0-9._-]*)\s*$') {
+        $tail = $matches[1]
+        if ($tail -notmatch '^(?i)(Moniker|Tag|ProductCode|Version|Match|Source|Name|Id)$' -and $tail -notmatch '^[0-9]') {
+            if ([string]::IsNullOrWhiteSpace($ParsedSource) -or $ParsedSource -match '[:\s]' -or $ParsedSource.Length -gt 32) {
+                return $tail
+            }
+        }
+    }
+
+    if ($ParsedSource -and $ParsedSource -notmatch '[:\s]' -and $ParsedSource.Length -le 32) {
+        return $ParsedSource.Trim()
+    }
+
+    return $DefaultSource
+}
+
 function Parse-WingetSearchResults {
     param(
         [Parameter(Mandatory = $true)]
-        $SearchOutput
+        $SearchOutput,
+
+        [string]$DefaultSource = ''
     )
 
     $lines = ConvertTo-WingetOutputLines -Output $SearchOutput
-    $packages = @()
-    $headerLineIndex = -1
+    $packages = [System.Collections.Generic.List[object]]::new()
+    $text = ($lines -join "`n").Trim()
 
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return @()
+    }
+
+    if ($text -match '(?i)No package found matching input criteria') {
+        return @()
+    }
+
+    foreach ($line in $lines) {
+        if ($line -match '^\s*Found\s+(.+?)\s+\[(.+?)\]\s*$') {
+            $name = $matches[1].Trim()
+            $id = Normalize-WingetPackageId -Id $matches[2].Trim()
+            $version = 'Unknown'
+            $lineIndex = [array]::IndexOf($lines, $line)
+            for ($j = $lineIndex + 1; $j -lt [Math]::Min($lineIndex + 12, $lines.Count); $j++) {
+                if ($lines[$j] -match '^\s*Version:\s+(.+?)\s*$') {
+                    $version = $matches[1].Trim()
+                    break
+                }
+            }
+
+            $packages.Add((New-WingetPackageResult -Name $name -Id $id -Version $version -Source $DefaultSource -TruncatedId:$false))
+            return @($packages)
+        }
+    }
+
+    $headerIndex = -1
     for ($i = 0; $i -lt $lines.Count; $i++) {
         if ($lines[$i] -match 'Name\s+Id\s+Version') {
-            $headerLineIndex = $i
+            $headerIndex = $i
             break
         }
     }
 
-    if ($headerLineIndex -eq -1) {
-        for ($i = 0; $i -lt $lines.Count; $i++) {
-            if ($lines[$i] -match 'Found\s+(.+?)\s+\[(.+?)\]') {
-                $name = $matches[1].Trim()
-                $id = $matches[2].Trim()
-                $version = 'Unknown'
-                for ($j = $i + 1; $j -lt [Math]::Min($i + 10, $lines.Count); $j++) {
-                    if ($lines[$j] -match 'Version:\s+(.+)') {
-                        $version = $matches[1].Trim()
-                        break
-                    }
-                }
-                return @([PSCustomObject]@{
-                    Name = $name
-                    Id = $id
-                    Version = $version
-                    Source = ''
-                })
-            }
-        }
+    if ($headerIndex -lt 0) {
         return @()
     }
 
-    for ($i = $headerLineIndex + 1; $i -lt $lines.Count; $i++) {
+    $columnMap = Get-WingetTableColumnMap -HeaderLine $lines[$headerIndex]
+    if (-not $columnMap) {
+        return @()
+    }
+
+    for ($i = $headerIndex + 1; $i -lt $lines.Count; $i++) {
         $line = $lines[$i]
 
-        if ($line -match '^-+$' -or $line.Trim() -eq '') {
-            if ($packages.Count -gt 0) {
-                $moreData = $false
-                for ($j = $i + 1; $j -lt [Math]::Min($i + 3, $lines.Count); $j++) {
-                    if ($lines[$j].Trim() -ne '' -and $lines[$j] -notmatch '^-+$' -and $lines[$j] -notmatch '█|▒|KB|MB|%') {
-                        $moreData = $true
-                        break
-                    }
-                }
-                if (-not $moreData) { break }
-            }
+        if ([string]::IsNullOrWhiteSpace($line)) {
+            if ($packages.Count -gt 0) { break }
             continue
         }
 
-        if ($line -match '█|▒|KB|MB|%' -or ($line.Length -lt 10 -and $line.Trim() -ne '')) {
+        if ($line -match '^-+$' -or $line -match '^[-\s\|\\/]+$') {
             continue
         }
 
-        if ($line -match "^\s*(.+?)\s{2,}([A-Za-z0-9][A-Za-z0-9.]*[A-Za-z0-9]|[A-Za-z0-9]+)\s{2,}([0-9][0-9A-Za-z.-]*[0-9A-Za-z]|[0-9]+)") {
-            $name = $matches[1].Trim()
-            $id = $matches[2].Trim()
-            $version = $matches[3].Trim()
-            $source = ''
-            if ($line -match '\s{2,}([A-Za-z]+)\s*$') {
-                $source = $matches[1].Trim()
-            }
+        if ($line -match '█|▒|\bKB\b|\bMB\b|%' -or ($line.Length -lt 8 -and $line.Trim() -ne '')) {
+            continue
+        }
 
-            if ($name -and $id -match '\.' -and $version) {
-                $packages += [PSCustomObject]@{
-                    Name = $name
-                    Id = $id
-                    Version = $version
-                    Source = $source
-                }
+        if ($line -match '(?i)^(Terms of Transaction|Sequel|Category|Pricing|Free|Paid|System Requirements|Description):') {
+            break
+        }
+
+        $row = Split-WingetTableRow -Line $line -ColumnMap $columnMap
+        $name = $row['Name']
+        $id = Normalize-WingetPackageId -Id $row['Id']
+        $version = if ($row.Contains('Version')) { $row['Version'] } else { '' }
+        $parsedSource = if ($row.Contains('Source')) { $row['Source'] } else { '' }
+        $source = Get-WingetSourceFromSearchLine -Line $line -ParsedSource $parsedSource -DefaultSource $DefaultSource
+
+        if (-not (Test-WingetSearchRow -Name $name -Id $id -Version $version)) {
+            # Fallback for misaligned columns: Name / Id / Version with 2+ spaces
+            if ($line -match '^\s*(.+?)\s{2,}([^\s]{2,}?)\s{2,}([0-9A-Za-z.<>=][0-9A-Za-z.<>=\s_-]*)') {
+                $name = $matches[1].Trim()
+                $id = Normalize-WingetPackageId -Id $matches[2].Trim()
+                $version = $matches[3].Trim()
+                $source = Get-WingetSourceFromSearchLine -Line $line -ParsedSource $source -DefaultSource $DefaultSource
+            } else {
                 continue
             }
         }
 
-        $parts = $line -split '\s{2,}', [System.StringSplitOptions]::RemoveEmptyEntries
-        if ($parts.Count -ge 3) {
-            $name = $parts[0].Trim()
-            $id = $parts[1].Trim()
-            $version = $parts[2].Trim()
-            $source = if ($parts.Count -ge 5) { $parts[4].Trim() } else { '' }
+        # Recover full version when column width truncates/overflows (common with Match column)
+        if ($id -and $line -match ('(?i)' + [regex]::Escape($id) + '\s+([0-9]+(?:\.[0-9A-Za-z_-]+)+)')) {
+            $version = $matches[1].Trim()
+        } elseif ($version -match '^(Moniker|Tag|ProductCode):') {
+            $version = 'Unknown'
+        } else {
+            $version = ($version -split '\s{2,}')[0].Trim()
+            # Strip trailing match labels that spilled into Version
+            if ($version -match '^(?<ver>[0-9][0-9A-Za-z.-]*)\s+(Moniker|Tag|ProductCode):') {
+                $version = $matches['ver']
+            }
+        }
 
-            if ($name -and $id -match '\.' -and $version -match '^[0-9A-Za-z.-]+$') {
-                $packages += [PSCustomObject]@{
-                    Name = $name
-                    Id = $id
-                    Version = $version
-                    Source = $source
-                }
+        if (-not (Test-WingetSearchRow -Name $name -Id $id -Version $version)) {
+            continue
+        }
+
+        $truncatedId = [bool]($id -match '…|\.\.\.$')
+        $packages.Add((New-WingetPackageResult -Name $name -Id $id -Version $version -Source $source -TruncatedId:$truncatedId))
+    }
+
+    return @($packages)
+}
+
+function Parse-WingetSourceList {
+    param(
+        [Parameter(Mandatory = $true)]
+        $SourceOutput
+    )
+
+    $lines = ConvertTo-WingetOutputLines -Output $SourceOutput
+    $sources = [System.Collections.Generic.List[string]]::new()
+    $headerIndex = -1
+
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -match '^\s*Name\s+Argument' -or $lines[$i] -match '^\s*Name\s+') {
+            $headerIndex = $i
+            break
+        }
+    }
+
+    $start = if ($headerIndex -ge 0) { $headerIndex + 1 } else { 0 }
+    for ($i = $start; $i -lt $lines.Count; $i++) {
+        $line = $lines[$i].Trim()
+        if ([string]::IsNullOrWhiteSpace($line) -or $line -match '^-+$') {
+            continue
+        }
+
+        # Typical: "winget    https://cdn.winget.microsoft.com/cache"
+        # Also accept "msstore   ..." and custom enterprise sources
+        if ($line -match '^(?i)(Name|Argument)\b') {
+            continue
+        }
+
+        $name = ($line -split '\s+', 2)[0].Trim()
+        if ($name -and $name -notmatch '^(?i)(Name|Argument)$' -and $name -match '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
+            if (-not ($sources -contains $name)) {
+                $sources.Add($name)
             }
         }
     }
 
-    return $packages
+    return @($sources)
+}
+
+function Get-WingetConfiguredSources {
+    [CmdletBinding()]
+    param()
+
+    try {
+        $result = Invoke-WingetCli -Command source -Arguments @('list')
+        $sources = Parse-WingetSourceList -SourceOutput $result.Output
+        if ($sources.Count -gt 0) {
+            return $sources
+        }
+    } catch {
+        Write-Verbose "Unable to list winget sources: $_"
+    }
+
+    # Sensible defaults when source list parsing fails
+    return @('winget', 'msstore')
+}
+
+function Sort-WingetPackageMatches {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Query,
+
+        [Parameter(Mandatory = $true)]
+        [AllowEmptyCollection()]
+        [array]$Packages
+    )
+
+    if ($Packages.Count -eq 0) {
+        return @()
+    }
+
+    $normalizedQuery = $Query.Trim().ToLowerInvariant()
+    $looksLikeId = Test-WingetPackageId -Query $Query
+
+    return @($Packages | Sort-Object -Property @(
+            @{
+                Expression = {
+                    $pkg = $_
+                    $score = 0
+                    $idLower = "$($pkg.Id)".ToLowerInvariant()
+                    $nameLower = "$($pkg.Name)".ToLowerInvariant()
+
+                    if ($looksLikeId -and $pkg.Id -eq $Query) { $score += 1000 }
+                    if ($pkg.Id -eq $Query) { $score += 900 }
+                    if ($idLower -eq $normalizedQuery) { $score += 800 }
+                    if ($idLower.StartsWith($normalizedQuery)) { $score += 80 }
+                    if ($pkg.Id -like "*$Query*") { $score += 200 }
+                    if ($nameLower -eq $normalizedQuery) { $score += 150 }
+                    if ($nameLower.StartsWith($normalizedQuery)) { $score += 60 }
+                    if ($pkg.Name -like "*$Query*") { $score += 100 }
+
+                    # Prefer community winget packages for Intune packaging, but keep all sources
+                    if ("$($pkg.Source)" -eq 'winget') { $score += 40 }
+                    if ("$($pkg.Source)" -eq 'msstore') { $score -= 10 }
+                    if ($pkg.TruncatedId) { $score -= 50 }
+                    if ($pkg.Version -eq 'Unknown') { $score -= 5 }
+
+                    return $score
+                }
+                Descending = $true
+            },
+            @{ Expression = { $_.Source }; Descending = $false },
+            @{ Expression = { $_.Name }; Descending = $false }
+        ))
+}
+
+function Find-WingetPackagesFromModule {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Query,
+
+        [switch]$Exact
+    )
+
+    if (-not (Get-Module -ListAvailable -Name Microsoft.WinGet.Client)) {
+        return $null
+    }
+
+    try {
+        Import-Module Microsoft.WinGet.Client -ErrorAction Stop
+        $params = @{ Name = $Query }
+        if ($Exact) {
+            $params = @{ Id = $Query }
+        }
+
+        $results = Find-WinGetPackage @params -ErrorAction Stop
+        if (-not $results) {
+            return @()
+        }
+
+        return @($results | ForEach-Object {
+                New-WingetPackageResult `
+                    -Name $_.Name `
+                    -Id $_.Id `
+                    -Version $(if ($_.Version) { "$($_.Version)" } else { 'Unknown' }) `
+                    -Source $(if ($_.Source) { "$($_.Source)" } else { '' }) `
+                    -TruncatedId:$false
+            })
+    } catch {
+        return $null
+    }
+}
+
+function Resolve-WingetTruncatedPackage {
+    param(
+        [Parameter(Mandatory = $true)]
+        [pscustomobject]$Package
+    )
+
+    if (-not $Package.TruncatedId) {
+        return $Package
+    }
+
+    $candidates = @($Package.Id, $Package.Name) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Select-Object -Unique
+    foreach ($candidate in $candidates) {
+        try {
+            $showArguments = @($candidate)
+            if ($Package.Source) {
+                $showArguments += @('--source', $Package.Source)
+            }
+            $result = Invoke-WingetCli -Command show -Arguments $showArguments
+            $details = ConvertFrom-WingetShowFoundLine -ShowOutput $result.Output
+            if ($details) {
+                return New-WingetPackageResult `
+                    -Name $details.Name `
+                    -Id $details.Id `
+                    -Version $(if ($Package.Version -and $Package.Version -ne 'Unknown') { $Package.Version } else { $details.Version }) `
+                    -Source $(if ($Package.Source) { $Package.Source } else { $details.Source }) `
+                    -TruncatedId:$false
+            }
+        } catch {
+            Write-Verbose "Could not resolve truncated package '$candidate': $_"
+        }
+    }
+
+    return $Package
+}
+
+function ConvertFrom-WingetShowFoundLine {
+    param($ShowOutput)
+
+    $lines = ConvertTo-WingetOutputLines -Output $ShowOutput
+    $text = ($lines -join "`n").Trim()
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return $null
+    }
+    if ($text -match '(?i)No package found|No applicable installer|Multiple packages found') {
+        return $null
+    }
+
+    $name = $null
+    $id = $null
+    $version = 'Unknown'
+    $source = ''
+
+    foreach ($line in $lines) {
+        if ($line -match '^\s*Found\s+(.+?)\s+\[(.+?)\]\s*$') {
+            $name = $matches[1].Trim()
+            $id = Normalize-WingetPackageId -Id $matches[2].Trim()
+            continue
+        }
+        if ($line -match '^\s*Version:\s+(.+?)\s*$') {
+            $version = $matches[1].Trim()
+            continue
+        }
+        if ($line -match '^\s*Source:\s+(.+?)\s*$') {
+            $source = $matches[1].Trim()
+        }
+    }
+
+    if ([string]::IsNullOrWhiteSpace($id)) {
+        return $null
+    }
+
+    if ([string]::IsNullOrWhiteSpace($name)) {
+        $name = $id
+    }
+
+    return New-WingetPackageResult -Name $name -Id $id -Version $version -Source $source -TruncatedId:$false
+}
+
+function Add-WingetPackageUnique {
+    param(
+        [System.Collections.Generic.List[object]]$Target,
+        [pscustomobject]$Package
+    )
+
+    if (-not $Package -or [string]::IsNullOrWhiteSpace($Package.Id)) {
+        return
+    }
+
+    $existing = $Target | Where-Object {
+        $_.Id -eq $Package.Id -and (
+            [string]::IsNullOrWhiteSpace($Package.Source) -or
+            [string]::IsNullOrWhiteSpace($_.Source) -or
+            $_.Source -eq $Package.Source
+        )
+    } | Select-Object -First 1
+
+    if ($existing) {
+        if ([string]::IsNullOrWhiteSpace($existing.Source) -and $Package.Source) {
+            $existing.Source = $Package.Source
+        }
+        if (($existing.Version -eq 'Unknown' -or [string]::IsNullOrWhiteSpace($existing.Version)) -and $Package.Version -and $Package.Version -ne 'Unknown') {
+            $existing.Version = $Package.Version
+        }
+        return
+    }
+
+    $Target.Add($Package)
 }
 
 function Search-WingetPackages {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)]
-        [string]$Query
+        [string]$Query,
+
+        [int]$MaxResultsPerSource = 50
     )
 
-    $result = Invoke-WingetCli -Command search -Arguments @($Query)
-    $packages = Parse-WingetSearchResults -SearchOutput $result.Output
-    $hasResults = $packages.Count -gt 0
-
-    if ($result.ExitCode -ne 0 -and -not $hasResults) {
-        throw "Winget search failed with exit code $($result.ExitCode). Output: $($result.Output | Out-String)"
+    $trimmedQuery = $Query.Trim()
+    if ([string]::IsNullOrWhiteSpace($trimmedQuery)) {
+        return @()
     }
 
-    return $packages
+    $packages = [System.Collections.Generic.List[object]]::new()
+    $looksLikeId = Test-WingetPackageId -Query $trimmedQuery
+    $errors = [System.Collections.Generic.List[string]]::new()
+
+    # Exact package ID resolution first (fast path for Publisher.Package queries)
+    if ($looksLikeId) {
+        try {
+            $showResult = Invoke-WingetCli -Command show -Arguments @($trimmedQuery, '--exact')
+            $exactPackage = ConvertFrom-WingetShowFoundLine -ShowOutput $showResult.Output
+            if ($exactPackage) {
+                Add-WingetPackageUnique -Target $packages -Package $exactPackage
+            }
+        } catch {
+            Write-Verbose "Exact show lookup failed for '$trimmedQuery': $_"
+        }
+    }
+
+    # Prefer structured WinGet PowerShell module when present (covers all configured sources)
+    $moduleResults = Find-WingetPackagesFromModule -Query $trimmedQuery -Exact:($looksLikeId)
+    if ($null -ne $moduleResults) {
+        foreach ($pkg in $moduleResults) {
+            Add-WingetPackageUnique -Target $packages -Package $pkg
+        }
+    }
+
+    # Always also search every configured winget repository via CLI so GUI results
+    # include winget, msstore, and any enterprise/custom sources.
+    $sources = @(Get-WingetConfiguredSources)
+    if ($sources.Count -eq 0) {
+        $sources = @('')
+    }
+
+    $countArgs = @()
+    if ($MaxResultsPerSource -gt 0) {
+        $countArgs = @('--count', "$MaxResultsPerSource")
+    }
+
+    foreach ($source in $sources) {
+        $searchArgs = @($trimmedQuery) + $countArgs
+        if ($source) {
+            $searchArgs += @('--source', $source)
+        }
+
+        try {
+            $result = Invoke-WingetCli -Command search -Arguments $searchArgs
+            $parsed = Parse-WingetSearchResults -SearchOutput $result.Output -DefaultSource $source
+            foreach ($pkg in $parsed) {
+                if ([string]::IsNullOrWhiteSpace($pkg.Source) -and $source) {
+                    $pkg.Source = $source
+                }
+                Add-WingetPackageUnique -Target $packages -Package $pkg
+            }
+
+            if ($result.ExitCode -ne 0 -and $parsed.Count -eq 0) {
+                $errors.Add("source '$source' exit $($result.ExitCode)")
+            }
+        } catch {
+            $errors.Add("source '$source': $($_.Exception.Message)")
+        }
+    }
+
+    # If per-source search found nothing, try one unscoped search across all repos
+    if ($packages.Count -eq 0) {
+        try {
+            $result = Invoke-WingetCli -Command search -Arguments (@($trimmedQuery) + $countArgs)
+            $parsed = Parse-WingetSearchResults -SearchOutput $result.Output
+            foreach ($pkg in $parsed) {
+                Add-WingetPackageUnique -Target $packages -Package $pkg
+            }
+
+            if ($result.ExitCode -ne 0 -and $packages.Count -eq 0) {
+                throw "Winget search failed with exit code $($result.ExitCode). Output: $($result.Output | Out-String)"
+            }
+        } catch {
+            if ($errors.Count -gt 0) {
+                throw "Winget search failed across repositories ($($errors -join '; ')). $($_.Exception.Message)"
+            }
+            throw
+        }
+    }
+
+    $resolved = foreach ($pkg in $packages) {
+        Resolve-WingetTruncatedPackage -Package $pkg
+    }
+
+    return Sort-WingetPackageMatches -Query $trimmedQuery -Packages @($resolved)
 }
 
 function Get-WingetPackageDetails {
@@ -135,12 +673,16 @@ function Get-WingetPackageDetails {
     param(
         [Parameter(Mandatory = $true)]
         [string]$PackageId,
-        [string]$Version
+        [string]$Version,
+        [string]$Source
     )
 
     $showArguments = @($PackageId, '--exact')
     if ($Version) {
         $showArguments += @('--version', $Version)
+    }
+    if ($Source) {
+        $showArguments += @('--source', $Source)
     }
 
     $result = Invoke-WingetCli -Command show -Arguments $showArguments
@@ -154,11 +696,12 @@ function Get-WingetPackageDetails {
     $lines = ConvertTo-WingetOutputLines -Output $appInfo
     $text = $lines -join "`n"
 
-    $packageId = if ($text -match 'Found .+? \[(.+?)\]') { $matches[1].Trim() } else { $PackageId }
+    $packageId = if ($text -match 'Found .+? \[(.+?)\]') { Normalize-WingetPackageId -Id $matches[1].Trim() } else { $PackageId }
     $displayName = if ($text -match 'Found (.+?) \[') { $matches[1].Trim() } else { $PackageId }
     $foundVersion = if ($text -match 'Version:\s+(.+)') { ($text | Select-String -Pattern 'Version:\s+(.+)' | Select-Object -First 1).Matches.Groups[1].Value.Trim() } else { $Version }
     $publisher = if ($text -match 'Publisher:\s+(.+)') { ($text | Select-String -Pattern 'Publisher:\s+(.+)' | Select-Object -First 1).Matches.Groups[1].Value.Trim() } else { 'Unknown' }
     $homepage = if ($text -match 'Homepage:\s+(.+)') { ($text | Select-String -Pattern 'Homepage:\s+(.+)' | Select-Object -First 1).Matches.Groups[1].Value.Trim() } else { '' }
+    $packageSource = if ($text -match 'Source:\s+(.+)') { ($text | Select-String -Pattern 'Source:\s+(.+)' | Select-Object -First 1).Matches.Groups[1].Value.Trim() } else { $Source }
 
     $description = 'No description available'
     $descriptionLine = $lines | Where-Object { $_ -match '^Description:\s+' } | Select-Object -First 1
@@ -168,7 +711,7 @@ function Get-WingetPackageDetails {
         if ($lineIndex -ge 0) {
             $extraLines = @()
             for ($i = $lineIndex + 1; $i -lt $lines.Count; $i++) {
-                if ($lines[$i] -match '^(Version|Publisher|Homepage|Installer|License|Tags|Moniker):') { break }
+                if ($lines[$i] -match '^(Version|Publisher|Homepage|Installer|License|Tags|Moniker|Source):') { break }
                 if ($lines[$i].Trim()) { $extraLines += $lines[$i].Trim() }
             }
             if ($extraLines.Count -gt 0) {
@@ -198,6 +741,7 @@ function Get-WingetPackageDetails {
         Description = $description
         Homepage = $homepage
         InstallerType = $installerType
+        Source = $packageSource
         RawOutput = $appInfo
     }
 }

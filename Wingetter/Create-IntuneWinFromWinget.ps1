@@ -67,14 +67,16 @@ function Select-WingetPackageFromCli {
     param([array]$Packages)
 
     if ($Packages.Count -eq 1) {
-        Write-Host "Found 1 matching package: $($Packages[0].Name) ($($Packages[0].Id))" -ForegroundColor Green
+        $sourceLabel = if ($Packages[0].Source) { " [$($Packages[0].Source)]" } else { '' }
+        Write-Host "Found 1 matching package: $($Packages[0].Name) ($($Packages[0].Id))$sourceLabel" -ForegroundColor Green
         return $Packages[0]
     }
 
     Write-Host "`nFound $($Packages.Count) matching packages:" -ForegroundColor Green
     for ($i = 0; $i -lt $Packages.Count; $i++) {
         $num = $i + 1
-        Write-Host "  $num. $($Packages[$i].Name) ($($Packages[$i].Id)) - Version: $($Packages[$i].Version)" -ForegroundColor Cyan
+        $sourceLabel = if ($Packages[$i].Source) { " [$($Packages[$i].Source)]" } else { '' }
+        Write-Host "  $num. $($Packages[$i].Name) ($($Packages[$i].Id)) - Version: $($Packages[$i].Version)$sourceLabel" -ForegroundColor Cyan
     }
 
     Add-Type -AssemblyName Microsoft.VisualBasic

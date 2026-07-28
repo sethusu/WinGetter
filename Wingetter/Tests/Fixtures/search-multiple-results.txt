@@ -1,0 +1,5 @@
+Name                     Id                        Version   Match      Source
+---------------------------------------------------------------------------------
+Google Chrome            Google.Chrome             131.0.6778.86 Moniker: chrome winget
+Chromium                 Eloston.UngoogledChromium 131.0.6778.85 Tag: chrome winget
+Microsoft Edge           Microsoft.Edge            131.0.2903.70 Tag: chrome winget

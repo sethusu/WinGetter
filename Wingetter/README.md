@@ -39,7 +39,8 @@ Or launch via the main script with no parameters:
 ### Using the GUI
 
 1. Enter an app name or Winget package ID (e.g. `Google.Chrome`, `webstorm`) and click **Search**.
-2. If multiple results are found, a **search dialog** opens with **radio buttons** — select the app you want to package and click **Select**.
+   Search queries **every configured Winget repository** (`winget`, `msstore`, and any custom sources).
+2. A **search dialog** opens with **radio buttons** — each result shows version and source; select the app you want to package and click **Select**.
 3. Choose an **output destination** (defaults to `Documents\Wingetter Output`).
 4. Optionally set a specific **version** or **custom icon**.
 5. Click **Create Package** and watch the **live progress tracker** and step list.
@@ -150,11 +151,17 @@ The core logic lives in `Wingetter.psm1`:
 ```powershell
 Import-Module .\Wingetter.psd1
 
-Search-WingetPackages -Query 'chrome'
+Search-WingetPackages -Query 'chrome'   # searches all configured repositories
 Get-WingetPackageDetails -PackageId 'Google.Chrome'
 Invoke-WingetterPackaging -PackageId 'Google.Chrome' -OutputPath 'C:\Out'
 Test-WingetterPrerequisites
 Get-WingetterSettings
+```
+
+## Tests
+
+```powershell
+.\Run-Tests.ps1
 ```
 
 ## Troubleshooting
@@ -163,6 +170,12 @@ Get-WingetterSettings
 
 - Install Winget: `winget --version`
 - Install Content Prep Tool and ensure `intunewinapputil` is on PATH
+
+### Search returns few or no results
+
+- Confirm repositories with `winget source list` (WinGetter searches each listed source)
+- Try the exact package ID (e.g. `Google.Chrome`) — exact IDs resolve via `winget show --exact`
+- For the most reliable structured search on Windows, install `Microsoft.WinGet.Client`
 
 ### Packaging failed
 
