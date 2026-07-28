@@ -21,7 +21,8 @@ Wingetter automates the creation of Intune Win32 (`.intunewin`) packages from Wi
 
 1. **Windows** with **PowerShell 5.1+**
 2. **Winget** — Windows Package Manager
-3. **Microsoft Win32 Content Prep Tool** — `intunewinapputil` on PATH
+3. **Microsoft Win32 Content Prep Tool** — `intunewinapputil` on PATH  
+   Install via winget (`Microsoft.Win32ContentPrepTool`), from the GUI **Install Content Prep** button, or with `Install-WingetterContentPrepTool`
 
 ## Quick Start (GUI)
 
@@ -157,6 +158,7 @@ Search-WingetPackages -Query 'chrome'   # searches all configured repositories
 Get-WingetPackageDetails -PackageId 'Google.Chrome'
 Invoke-WingetterPackaging -PackageId 'Google.Chrome' -OutputPath 'C:\Out'
 Test-WingetterPrerequisites
+Install-WingetterContentPrepTool   # winget install Microsoft.Win32ContentPrepTool
 Get-WingetterSettings
 ```
 
@@ -171,7 +173,8 @@ Get-WingetterSettings
 ### Prerequisites check fails in GUI
 
 - Install Winget: `winget --version`
-- Install Content Prep Tool and ensure `intunewinapputil` is on PATH
+- Click **Install Content Prep** in the header, or run `Install-WingetterContentPrepTool`
+- Or install manually: `winget install --exact --id Microsoft.Win32ContentPrepTool` and ensure `intunewinapputil` is on PATH
 
 ### Search returns few or no results
 

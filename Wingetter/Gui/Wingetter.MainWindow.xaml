@@ -19,7 +19,22 @@
       <StackPanel>
         <TextBlock Text="Wingetter" FontSize="24" FontWeight="SemiBold" Foreground="#1B2A41"/>
         <TextBlock Text="Create Intune Win32 packages from Winget applications" Foreground="#5C6B7A" Margin="0,4,0,0"/>
-        <TextBlock x:Name="PrereqStatusText" Text="Checking prerequisites..." Foreground="#5C6B7A" Margin="0,8,0,0" TextWrapping="Wrap"/>
+        <DockPanel Margin="0,8,0,0" LastChildFill="True">
+          <Button x:Name="InstallContentPrepButton"
+                  Content="Install Content Prep"
+                  Height="26"
+                  Padding="10,2"
+                  Margin="10,0,0,0"
+                  DockPanel.Dock="Right"
+                  VerticalAlignment="Center"
+                  Visibility="Collapsed"
+                  ToolTip="Install Microsoft Win32 Content Prep Tool (intunewinapputil) via winget"/>
+          <TextBlock x:Name="PrereqStatusText"
+                     Text="Checking prerequisites..."
+                     Foreground="#5C6B7A"
+                     TextWrapping="Wrap"
+                     VerticalAlignment="Center"/>
+        </DockPanel>
       </StackPanel>
     </Border>
 
