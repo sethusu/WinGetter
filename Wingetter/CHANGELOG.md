@@ -1,5 +1,14 @@
 # Wingetter Changelog
 
+## Version 2.1.4 - 2026-07-28
+
+### Default output location
+- Default base output folder is now `%USERPROFILE%\Documents\Wingetter` (named after the app)
+- Packaging always writes under `{base}\{PackageId}\` — a folder named after the selected Winget app
+- GUI auto-fills the output path with the app folder when you select a package
+- Choosing Browse sets the base folder; the app-named subfolder is applied automatically
+- Existing `Documents\Wingetter Output` settings migrate to `Documents\Wingetter`
+
 ## Version 2.1.3 - 2026-07-28
 
 ### Content Prep dependency helper

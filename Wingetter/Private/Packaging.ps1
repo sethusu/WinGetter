@@ -20,12 +20,14 @@ function Invoke-WingetterPackaging {
         $details = Get-WingetPackageDetails -PackageId $PackageId -Version $Version
         $details | Add-Member -NotePropertyName Developer -NotePropertyValue $details.Publisher -Force
 
-        if (-not (Test-Path $OutputPath)) {
-            New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
-        }
-
         Write-WingetterProgress -Step 2 -TotalSteps $totalSteps -StepName 'Creating directories' -Percent 10 -Message 'Creating output folders' -OnProgress $OnProgress
-        $appDirectory = Join-Path $OutputPath $details.PackageId
+        # Always place packages under a folder named after the app (PackageId).
+        # If OutputPath already ends with that folder, do not nest a second copy.
+        $appDirectory = Get-WingetterAppOutputPath -BasePath $OutputPath -PackageId $details.PackageId
+        $baseOutputPath = Get-WingetterBaseOutputPath -Path $appDirectory -PackageId $details.PackageId
+        if (-not (Test-Path $baseOutputPath)) {
+            New-Item -ItemType Directory -Path $baseOutputPath -Force | Out-Null
+        }
         $versionDirectory = Join-Path $appDirectory $details.Version
         $failureLogPath = Join-Path $versionDirectory 'wingetter-packaging.log'
         if (-not (Test-Path $versionDirectory)) {
@@ -125,7 +127,7 @@ function Invoke-WingetterPackaging {
             }
         }
 
-        Save-WingetterSettings -OutputPath $OutputPath -LastPackageId $details.PackageId
+        Save-WingetterSettings -OutputPath $baseOutputPath -LastPackageId $details.PackageId
 
         return [PSCustomObject]@{
             Success = $true

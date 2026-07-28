@@ -552,9 +552,18 @@ $stepMap = @{
 }
 
 $settings = Get-WingetterSettings
-$outputPathBox.Text = $settings.OutputPath
+$script:baseOutputPath = Get-WingetterBaseOutputPath -Path $settings.OutputPath -PackageId $settings.LastPackageId
+$outputPathBox.Text = $script:baseOutputPath
 $searchBox.Text = $settings.LastSearch
 Initialize-StepList -ListControl $stepList
+
+function Update-OutputPathForSelectedApp {
+    if ($script:selectedPackage -and $script:selectedPackage.Id) {
+        $outputPathBox.Text = Get-WingetterAppOutputPath -BasePath $script:baseOutputPath -PackageId $script:selectedPackage.Id
+    } else {
+        $outputPathBox.Text = $script:baseOutputPath
+    }
+}
 
 function Update-PrereqStatusDisplay {
     param(
@@ -627,9 +636,11 @@ function Update-SelectedAppDisplay {
         if (-not $versionBox.Text.Trim()) {
             $versionBox.Text = if ($script:selectedPackage.Version -ne 'Unknown') { $script:selectedPackage.Version } else { '' }
         }
+        Update-OutputPathForSelectedApp
     } else {
         $selectedAppText.Text = 'No application selected.'
         $selectedAppText.Foreground = ConvertTo-WpfBrush '#5C6B7A'
+        Update-OutputPathForSelectedApp
     }
 }
 
@@ -876,7 +887,11 @@ function Start-WingetterPackagingFromUi {
 
     $versionOverride = $versionBox.Text.Trim()
     $outputPath = $outputPathBox.Text.Trim()
-    Save-WingetterSettings -OutputPath $outputPath -LastPackageId $script:selectedPackage.Id
+    $script:baseOutputPath = Get-WingetterBaseOutputPath -Path $outputPath -PackageId $script:selectedPackage.Id
+    # Always pack into a folder named after the selected app.
+    $appOutputPath = Get-WingetterAppOutputPath -BasePath $script:baseOutputPath -PackageId $script:selectedPackage.Id
+    $outputPathBox.Text = $appOutputPath
+    Save-WingetterSettings -OutputPath $script:baseOutputPath -LastPackageId $script:selectedPackage.Id
 
     $packageVersion = $versionOverride
     if (-not $packageVersion -and $script:selectedPackage.Version -and $script:selectedPackage.Version -ne 'Unknown') {
@@ -886,7 +901,7 @@ function Start-WingetterPackagingFromUi {
     $packArguments = @{
         PackageId = $script:selectedPackage.Id
         Version = $packageVersion
-        OutputPath = $outputPath
+        OutputPath = $appOutputPath
         IconPath = $script:customIconPath
         CollectIconCandidates = $true
     }
@@ -939,10 +954,11 @@ $searchBox.Add_KeyDown({
 })
 
 $browseOutputButton.Add_Click({
-    $path = Show-FolderBrowser -Description 'Select output destination for Wingetter packages' -SelectedPath $outputPathBox.Text
+    $path = Show-FolderBrowser -Description 'Select base output folder (each app gets its own subfolder)' -SelectedPath $script:baseOutputPath
     if ($path) {
-        $outputPathBox.Text = $path
-        Save-WingetterSettings -OutputPath $path
+        $script:baseOutputPath = $path
+        Update-OutputPathForSelectedApp
+        Save-WingetterSettings -OutputPath $script:baseOutputPath -LastPackageId $(if ($script:selectedPackage) { $script:selectedPackage.Id } else { $null })
     }
 })
 
