@@ -1,5 +1,13 @@
 # Wingetter Changelog
 
+## Version 2.2.0 - 2026-07-28
+
+### Double-click executable (ps2exe)
+- Added `Launch-Wingetter.ps1` entry point that starts the GUI without an elevated PowerShell session
+- Added `Build\Build-WingetterExe.ps1` to compile a portable `Wingetter.exe` with the PowerShell Gallery `ps2exe` module and stage `dist\Wingetter\` (+ zip)
+- Added `Start-Wingetter.cmd` for double-click launch from the source tree before building an `.exe`
+- End users keep `Wingetter.exe` next to `Gui\`, `Private\`, and `Wingetter.psd1` — no admin terminal required
+
 ## Version 2.1.3 - 2026-07-28
 
 ### Content Prep dependency helper

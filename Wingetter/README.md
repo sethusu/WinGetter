@@ -26,6 +26,21 @@ Wingetter automates the creation of Intune Win32 (`.intunewin`) packages from Wi
 
 ## Quick Start (GUI)
 
+### Double-click executable
+
+Build a portable folder on Windows:
+
+```powershell
+cd Wingetter
+.\Build\Build-WingetterExe.ps1
+```
+
+Then double-click `dist\Wingetter\Wingetter.exe` (or unzip `dist\Wingetter-portable.zip` elsewhere). No elevated PowerShell is required. Keep `Wingetter.exe` next to `Gui\`, `Private\`, and `Wingetter.psd1`.
+
+From the source tree without compiling, double-click `Start-Wingetter.cmd`.
+
+### From PowerShell
+
 ```powershell
 cd Wingetter
 .\Gui\Start-WingetterGui.ps1
@@ -166,7 +181,18 @@ Get-WingetterSettings
 
 ```powershell
 .\Run-Tests.ps1
+.\Build\Test-PackagingScripts.ps1   # launcher / build script sanity checks
 ```
+
+## Building Wingetter.exe (ps2exe)
+
+On Windows:
+
+```powershell
+.\Build\Build-WingetterExe.ps1
+```
+
+This installs the Gallery `ps2exe` module (CurrentUser) if needed, stages runtime files under `..\dist\Wingetter\`, compiles `Launch-Wingetter.ps1` to `Wingetter.exe` (no console, no admin manifest), and creates `..\dist\Wingetter-portable.zip`.
 
 ## Troubleshooting
 

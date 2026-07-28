@@ -1,0 +1,7 @@
+# Build / packaging outputs
+/dist/
+*.zip
+
+# Local ps2exe experiments (built artifacts belong under dist/)
+/Wingetter/Wingetter.exe
+/Wingetter/Launch-Wingetter.exe
