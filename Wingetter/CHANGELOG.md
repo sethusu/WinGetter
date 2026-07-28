@@ -8,6 +8,7 @@
 - Added `Start-Wingetter.cmd` for double-click launch from the source tree before building an `.exe`
 - End users keep `Wingetter.exe` next to `Gui\`, `Private\`, and `Wingetter.psd1` — no admin terminal required
 - Compiled `Wingetter.exe` launches the GUI in a separate Windows PowerShell 5.1 process (avoids ps2exe host parse errors on regex `{n,}` patterns in `Private\Winget.ps1`)
+- Child launch uses `-EncodedCommand` + `CreateNoWindow` so paths with spaces (e.g. `D:\Intoon In Progress\...`) do not flash-and-die; failures write `%TEMP%\Wingetter-launch.log`
 
 ## Version 2.1.4 - 2026-07-28
 

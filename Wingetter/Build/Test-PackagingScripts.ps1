@@ -55,6 +55,9 @@ foreach ($needle in @(
         'Start-WingetterGuiProcess'
         'WindowsPowerShell\v1.0\powershell.exe'
         'isCompiled'
+        'EncodedCommand'
+        'Wingetter-launch.log'
+        'CreateNoWindow'
     )) {
     if ($launcher -notmatch [regex]::Escape($needle)) {
         $failures += "Launch-Wingetter.ps1 missing expected content: $needle"
