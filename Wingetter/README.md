@@ -194,7 +194,14 @@ On Windows:
 
 This installs the Gallery `ps2exe` module (CurrentUser) if needed, stages runtime files under `..\dist\Wingetter\`, compiles `Launch-Wingetter.ps1` to `Wingetter.exe` (no console, no admin manifest), and creates `..\dist\Wingetter-portable.zip`.
 
-The `.exe` is a thin stub: it starts `Gui\Start-WingetterGui.ps1` in a separate Windows PowerShell 5.1 process so module parsing (including regex quantifiers in `Private\Winget.ps1`) runs outside the ps2exe host.
+The `.exe` is a thin stub: it starts `Gui\Start-WingetterGui.ps1` in a separate Windows PowerShell 5.1 process so module parsing (including regex quantifiers in `Private\Winget.ps1`) runs outside the ps2exe host. Launch uses `-EncodedCommand` so folders with spaces work, and writes `%TEMP%\Wingetter-launch.log`.
+
+To diagnose on Windows without rebuilding:
+
+```powershell
+.\Build\Diagnose-WingetterLaunch.ps1
+.\Build\Diagnose-WingetterLaunch.ps1 -StartGui
+```
 
 ## Troubleshooting
 
