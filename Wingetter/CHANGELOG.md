@@ -1,11 +1,22 @@
 # Wingetter Changelog
 
-## Version 2.1.2 - 2026-07-28
+## Version 2.1.3 - 2026-07-28
 
 ### Content Prep dependency helper
 - Added `Install-WingetterContentPrepTool` to install `Microsoft.Win32ContentPrepTool` via winget
 - Stronger Content Prep discovery (PATH refresh + common WinGet Links / install locations)
 - GUI shows an **Install Content Prep** button when the tool is missing
+
+## Version 2.1.2 - 2026-07-28
+
+### Icon resolution (installer-first)
+- Prefer extracting icons from the downloaded installer before web image search
+- EXE/MSI: extract the largest embedded icon resource (not just the tiny associated icon)
+- AppX/MSIX: open the package and pick the best square PNG/ICO asset (StoreLogo / Square logos)
+- Always include the installer icon as candidate #1 so web hits cannot crowd it out of the picker
+- Demote brittle Bing image scraping; remove reliance on the retired Clearbit logo API
+- Replace known Google Chrome SVG URLs with PNG sources the converter can save
+- Added Pester coverage for icon priority scoring
 
 ## Version 2.1.1 - 2026-07-28
 

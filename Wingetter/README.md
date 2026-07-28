@@ -11,7 +11,7 @@ Wingetter automates the creation of Intune Win32 (`.intunewin`) packages from Wi
 - **`install.ps1`**, **`detection.ps1`**, and **`uninstall.ps1`** following Intune Win32 best practices (transcript logging, return codes, sysnative PowerShell invocation)
 - **`README.md`** with every Intune portal field documented in Markdown (name, description, publisher, developer, version, commands, detection, return codes, and more)
 - **`win32LobApp.json`** and **`app.json`** metadata exports
-- Tiered icon resolution (Wikimedia, web search, Winget manifest, homepage, EXE extraction)
+- Tiered icon resolution (installer extraction first, then Winget/homepage, then web search)
 - **`wingetter-packaging.log`** written when a packaging run fails
 - Settings persistence (`%AppData%\Wingetter\settings.json`)
 
@@ -127,14 +127,16 @@ Wingetter resolves icons using a **tiered, scored strategy** (most reliable firs
 
 | Priority | Source | Notes |
 |----------|--------|-------|
-| 1 | Known publisher URLs | Curated PNG/ICO URLs (e.g. Steam, JetBrains, Microsoft) |
-| 2 | Wikimedia Commons | Searches for product logo PNGs |
-| 3 | Clearbit / web image search | Domain logos and Bing image search results |
-| 4 | `winget show` + manifest | IconUrl and homepage metadata from winget-pkgs |
-| 5 | Homepage metadata | Favicons, apple-touch-icon, Open Graph images |
-| 6 | Installer EXE | Associated icon and shell extraction |
+| 1 | **Installer (local)** | Extract largest icon from EXE/MSI, or search PNG/ICO assets inside AppX/MSIX packages |
+| 2 | Known publisher URLs | Curated PNG/ICO URLs (e.g. Steam, JetBrains, Microsoft) |
+| 3 | `winget show` + manifest | IconUrl and homepage metadata from winget-pkgs |
+| 4 | Homepage metadata | Favicons, apple-touch-icon, Open Graph images |
+| 5 | Wikimedia Commons | Optional brand logo lookup |
+| 6 | Web image search | Last resort only — demoted because scrapes often return the wrong logo |
 
-**ICO favicons** are converted to **PNG** for Intune. In the GUI, up to **3 distinct candidates** are downloaded; after packaging you can pick the best match in the icon picker dialog.
+**Why installer-first?** Web PNG search frequently returns the wrong brand (or nothing). The downloaded Winget installer already contains the real app icon — extracting it (or finding packaged `.png` assets in MSIX) is more accurate for Intune.
+
+**ICO favicons** are converted to **PNG** for Intune. In the GUI, up to **3 distinct candidates** are collected; the installer icon is always attempted first, then web fallbacks fill remaining slots for the picker.
 
 GitHub and generic favicon URLs are deprioritized or filtered unless the app homepage is on GitHub.
 

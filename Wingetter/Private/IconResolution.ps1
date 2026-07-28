@@ -245,31 +245,31 @@ function Get-IconUrlPriorityScore {
         [string]$Url,
         [string]$DisplayName,
         [string]$PackageId,
-        [ValidateSet('Known', 'Wikimedia', 'Clearbit', 'WingetShow', 'WingetManifest', 'WebSearch', 'Homepage', 'Heuristic', 'Favicon')]
+        [ValidateSet('Installer', 'Known', 'Wikimedia', 'WingetShow', 'WingetManifest', 'WebSearch', 'Homepage', 'Heuristic', 'Favicon')]
         [string]$Source
     )
 
     $score = switch ($Source) {
+        'Installer' { 1100 }
         'Known' { 1000 }
-        'Wikimedia' { 920 }
-        'Clearbit' { 880 }
         'WingetShow' { 860 }
         'WingetManifest' { 820 }
-        'WebSearch' { 780 }
         'Homepage' { 640 }
+        'Wikimedia' { 520 }
         'Heuristic' { 220 }
         'Favicon' { 120 }
+        'WebSearch' { 80 }
         default { 0 }
     }
 
     if ($Url -match '\.png($|\?)') { $score += 90 }
     if ($Url -match '\.(jpg|jpeg)($|\?)') { $score += 70 }
-    if ($Url -match '(?i)(logo|brand|app[-_]?icon)') { $score += 45 }
+    if ($Url -match '(?i)(logo|brand|app[-_]?icon|Square\d+|StoreLogo|AppList)') { $score += 45 }
     if ($Url -match '(?i)favicon') { $score -= 60 }
     if ($Url -match '\.ico($|\?)') { $score -= 40 }
-    if ($Url -match '\.svg($|\?)') { $score -= 25 }
+    if ($Url -match '\.svg($|\?)') { $score -= 120 }
     if ($Url -match 'upload\.wikimedia\.org') { $score += 55 }
-    if ($Url -match 'logo\.clearbit\.com') { $score += 50 }
+    if ($Url -match 'logo\.clearbit\.com') { $score -= 200 }
 
     $appToken = ($PackageId -split '\.')[-1]
     if ($DisplayName -and $Url -match [regex]::Escape($DisplayName)) { $score += 35 }
@@ -441,7 +441,13 @@ function Get-KnownPackageIconUrls {
                 'https://store.steampowered.com/favicon.ico'
             )
         }
-        'Google.Chrome' { $urls += @('https://www.google.com/chrome/static/images/chrome-logo-m100.svg', 'https://www.google.com/chrome/static/images/chrome-logo.svg', 'https://www.google.com/favicon.ico') }
+        'Google.Chrome' {
+            $urls += @(
+                'https://www.google.com/chrome/static/images/chrome-logo-m100.png'
+                'https://www.gstatic.com/images/branding/product/2x/chrome_48dp.png'
+                'https://www.google.com/favicon.ico'
+            )
+        }
         'Microsoft.*' {
             $urls += @(
                 'https://www.microsoft.com/favicon.ico'
@@ -591,23 +597,6 @@ function Get-IconUrlsFromWikimedia {
     return $urls | Select-Object -Unique
 }
 
-function Get-IconUrlsFromClearbit {
-    param(
-        [string]$Homepage,
-        [string]$PublisherUrl = $null
-    )
-
-    $urls = @()
-    foreach ($site in @($Homepage, $PublisherUrl)) {
-        $domain = Get-WingetterDomainFromUrl -Url $site
-        if ($domain -and $domain -notlike 'github.com' -and $domain -notlike 'raw.githubusercontent.com') {
-            $urls += "https://logo.clearbit.com/$domain"
-        }
-    }
-
-    return $urls | Select-Object -Unique
-}
-
 function Get-IconUrlsFromWebSearch {
     param(
         [string]$DisplayName,
@@ -615,21 +604,22 @@ function Get-IconUrlsFromWebSearch {
         [string]$Publisher
     )
 
+    # Bing HTML scraping is brittle and frequently returns unrelated logos.
+    # Keep a narrow last-resort search only; prefer installer extraction instead.
     $urls = @()
     $appName = if ($DisplayName) { $DisplayName.Trim() } else { ($PackageId -split '\.')[-1] }
     if ([string]::IsNullOrWhiteSpace($appName)) { return @() }
 
     $publisherText = if ($Publisher) { $Publisher.Trim() } else { '' }
     $searchTerms = @(
-        "$appName $publisherText logo png"
-        "$appName app icon png"
-        "$appName logo transparent png"
+        "`"$appName`" $publisherText official logo png"
+        "`"$appName`" app icon png -favicon -template"
     )
 
     foreach ($term in ($searchTerms | Select-Object -Unique)) {
         try {
             $encodedQuery = [Uri]::EscapeDataString($term)
-            $searchUrl = "https://www.bing.com/images/search?q=$encodedQuery&first=1&form=HDRSC2"
+            $searchUrl = "https://www.bing.com/images/search?q=$encodedQuery&first=1&qft=+filterui:imagesize-medium&form=HDRSC2"
             $html = Get-WingetterWebString -Url $searchUrl
             if (-not $html) { continue }
 
@@ -639,21 +629,340 @@ function Get-IconUrlsFromWebSearch {
                 '(?i)turl&quot;:&quot;(https?://[^&]+?\.(?:png|jpg|jpeg))'
             )) {
                 foreach ($match in [regex]::Matches($html, $pattern)) {
-                    $urls += $match.Groups[1].Value
-                }
-            }
-
-            foreach ($match in [regex]::Matches($html, '(?i)(https?://[^\s"<>]+\.png)')) {
-                if ($match.Value -match '(?i)logo|icon|brand|app') {
-                    $urls += $match.Value
+                    $candidate = $match.Groups[1].Value
+                    if ($candidate -match '(?i)favicon|sprite|placeholder|avatar|thumb') { continue }
+                    $urls += $candidate
                 }
             }
         } catch {
             Write-Verbose "Web image search failed for '$term': $_"
         }
+
+        if ($urls.Count -ge 6) { break }
     }
 
     return $urls | Select-Object -Unique
+}
+
+function Initialize-WingetterNativeIconExtractor {
+    if ('WingetterNativeIconExtractor' -as [type]) {
+        return
+    }
+
+    Add-Type -TypeDefinition @"
+using System;
+using System.Drawing;
+using System.Drawing.Imaging;
+using System.Runtime.InteropServices;
+
+public static class WingetterNativeIconExtractor {
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    private static extern uint ExtractIconEx(string lpszFile, int nIconIndex, IntPtr[] phiconLarge, IntPtr[] phiconSmall, uint nIcons);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool DestroyIcon(IntPtr hIcon);
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr ExtractIcon(IntPtr hInst, string lpszExeFileName, int nIconIndex);
+
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern int PrivateExtractIcons(
+        string lpszFile,
+        int nIconIndex,
+        int cxIcon,
+        int cyIcon,
+        IntPtr[] phicon,
+        int[] piconid,
+        uint nIcons,
+        uint flags);
+
+    public static bool ExtractLargestToPng(string filePath, string outputPath) {
+        int count = (int)ExtractIconEx(filePath, -1, null, null, 0);
+        if (count <= 0) {
+            count = 8;
+        }
+
+        int[] sizes = new int[] { 256, 128, 96, 64, 48, 32 };
+        Bitmap best = null;
+        int bestArea = 0;
+
+        try {
+            for (int index = 0; index < count && index < 32; index++) {
+                foreach (int size in sizes) {
+                    IntPtr[] icons = new IntPtr[1];
+                    int[] ids = new int[1];
+                    int extracted = PrivateExtractIcons(filePath, index, size, size, icons, ids, 1, 0);
+                    if (extracted <= 0 || icons[0] == IntPtr.Zero) {
+                        continue;
+                    }
+
+                    try {
+                        using (Icon icon = (Icon)Icon.FromHandle(icons[0]).Clone())
+                        using (Bitmap bmp = icon.ToBitmap()) {
+                            int area = bmp.Width * bmp.Height;
+                            if (area > bestArea && bmp.Width >= 32 && bmp.Height >= 32) {
+                                if (best != null) { best.Dispose(); }
+                                best = new Bitmap(bmp);
+                                bestArea = area;
+                            }
+                        }
+                    } finally {
+                        DestroyIcon(icons[0]);
+                    }
+
+                    if (bestArea >= 256 * 256) {
+                        break;
+                    }
+                }
+
+                if (bestArea >= 256 * 256) {
+                    break;
+                }
+            }
+
+            if (best == null) {
+                for (int index = 0; index < 8; index++) {
+                    IntPtr hIcon = ExtractIcon(IntPtr.Zero, filePath, index);
+                    if (hIcon == IntPtr.Zero) { continue; }
+                    try {
+                        using (Icon icon = (Icon)Icon.FromHandle(hIcon).Clone())
+                        using (Bitmap bmp = icon.ToBitmap()) {
+                            int area = bmp.Width * bmp.Height;
+                            if (area > bestArea && bmp.Width >= 32 && bmp.Height >= 32) {
+                                if (best != null) { best.Dispose(); }
+                                best = new Bitmap(bmp);
+                                bestArea = area;
+                            }
+                        }
+                    } finally {
+                        DestroyIcon(hIcon);
+                    }
+                }
+            }
+
+            if (best == null) {
+                return false;
+            }
+
+            best.Save(outputPath, ImageFormat.Png);
+            return true;
+        } finally {
+            if (best != null) { best.Dispose(); }
+        }
+    }
+}
+"@ -ReferencedAssemblies System.Drawing -ErrorAction Stop
+}
+
+function Get-ImageFileQualityScore {
+    param([string]$Path)
+
+    if (-not (Test-Path $Path)) { return -1 }
+
+    try {
+        Add-Type -AssemblyName System.Drawing -ErrorAction Stop
+        $image = [System.Drawing.Image]::FromFile($Path)
+        try {
+            $width = $image.Width
+            $height = $image.Height
+            if ($width -lt 32 -or $height -lt 32) { return -1 }
+
+            $area = $width * $height
+            $score = $area
+            $name = [System.IO.Path]::GetFileName($Path)
+
+            if ($name -match '(?i)Square\d+x\d+Logo|StoreLogo|AppList|logo|icon|brand') { $score += 500000 }
+            if ($name -match '(?i)splash|badge|lockscreen|tilewide|screenshot|banner') { $score -= 400000 }
+            if ($width -eq $height) { $score += 100000 }
+            if ([math]::Abs($width - $height) -gt [math]::Max($width, $height) * 0.35) { $score -= 200000 }
+
+            return $score
+        } finally {
+            $image.Dispose()
+        }
+    } catch {
+        return -1
+    }
+}
+
+function Find-BestPngIconInDirectory {
+    param(
+        [string]$Directory,
+        [string]$OutputPath,
+        [scriptblock]$OnProgress
+    )
+
+    if (-not (Test-Path $Directory)) { return $false }
+
+    $candidates = @(Get-ChildItem -Path $Directory -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.Extension -match '(?i)^\.(png|ico|jpe?g)$' -and
+            $_.Length -gt 512 -and
+            $_.FullName -notmatch '(?i)(screenshot|splashscreen|badgelogo|lockscreen)'
+        })
+
+    $bestPath = $null
+    $bestScore = -1
+
+    foreach ($file in $candidates) {
+        $score = Get-ImageFileQualityScore -Path $file.FullName
+        if ($score -gt $bestScore) {
+            $bestScore = $score
+            $bestPath = $file.FullName
+        }
+    }
+
+    if (-not $bestPath) { return $false }
+
+    $bytes = [System.IO.File]::ReadAllBytes($bestPath)
+    if (Save-BytesAsPngIcon -Bytes $bytes -OutputPath $OutputPath) {
+        if (Test-SavedIconQuality -OutputPath $OutputPath -MinimumSize 32) {
+            Write-WingetterLog -Message "Selected package image asset: $bestPath" -Level Success -OnProgress $OnProgress
+            return $true
+        }
+    }
+
+    return $false
+}
+
+function Export-IconFromMsixPackage {
+    param(
+        [string]$PackagePath,
+        [string]$OutputPath,
+        [scriptblock]$OnProgress
+    )
+
+    $extractRoot = Join-Path $env:TEMP ("wingetter-msix-icons-{0}" -f ([Guid]::NewGuid().ToString('N')))
+    try {
+        New-Item -ItemType Directory -Path $extractRoot -Force | Out-Null
+        Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
+        [System.IO.Compression.ZipFile]::ExtractToDirectory($PackagePath, $extractRoot)
+
+        if (Find-BestPngIconInDirectory -Directory $extractRoot -OutputPath $OutputPath -OnProgress $OnProgress) {
+            Write-WingetterLog -Message 'Extracted icon PNG from AppX/MSIX package assets' -Level Success -OnProgress $OnProgress
+            return $true
+        }
+    } catch {
+        Write-WingetterLog -Message "AppX/MSIX icon search failed: $_" -Level Warning -OnProgress $OnProgress
+    } finally {
+        if (Test-Path $extractRoot) {
+            Remove-Item $extractRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    return $false
+}
+
+function Export-IconFromMsiPackage {
+    param(
+        [string]$MsiPath,
+        [string]$OutputPath,
+        [scriptblock]$OnProgress
+    )
+
+    # Prefer embedded PE/shell icons first; then fall back to administrative extract + PNG search.
+    try {
+        Initialize-WingetterNativeIconExtractor
+        if ([WingetterNativeIconExtractor]::ExtractLargestToPng($MsiPath, $OutputPath)) {
+            if ((Test-Path $OutputPath) -and (Test-SavedIconQuality -OutputPath $OutputPath -MinimumSize 32)) {
+                Write-WingetterLog -Message 'Extracted icon resource from MSI' -Level Success -OnProgress $OnProgress
+                return $true
+            }
+        }
+    } catch {
+        Write-Verbose "MSI native icon extraction failed: $_"
+    }
+
+    $extractRoot = Join-Path $env:TEMP ("wingetter-msi-icons-{0}" -f ([Guid]::NewGuid().ToString('N')))
+    try {
+        New-Item -ItemType Directory -Path $extractRoot -Force | Out-Null
+        $msiArgs = "/a `"$MsiPath`" TARGETDIR=`"$extractRoot`" /qn"
+        $process = Start-Process -FilePath 'msiexec.exe' -ArgumentList $msiArgs -Wait -PassThru -WindowStyle Hidden -ErrorAction Stop
+        if ($process.ExitCode -eq 0 -and (Find-BestPngIconInDirectory -Directory $extractRoot -OutputPath $OutputPath -OnProgress $OnProgress)) {
+            Write-WingetterLog -Message 'Found icon image inside MSI payload' -Level Success -OnProgress $OnProgress
+            return $true
+        }
+    } catch {
+        Write-WingetterLog -Message "MSI payload icon search failed: $_" -Level Warning -OnProgress $OnProgress
+    } finally {
+        if (Test-Path $extractRoot) {
+            Remove-Item $extractRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    return $false
+}
+
+function Export-BestIconFromInstaller {
+    param(
+        [string]$InstallerPath,
+        [string]$OutputPath,
+        [scriptblock]$OnProgress
+    )
+
+    if (-not $InstallerPath -or -not (Test-Path $InstallerPath)) {
+        return $false
+    }
+
+    $extension = [System.IO.Path]::GetExtension($InstallerPath).ToLowerInvariant()
+
+    switch ($extension) {
+        { $_ -in '.msix', '.appx', '.msixbundle', '.appxbundle' } {
+            if (Export-IconFromMsixPackage -PackagePath $InstallerPath -OutputPath $OutputPath -OnProgress $OnProgress) {
+                return $true
+            }
+        }
+        '.msi' {
+            if (Export-IconFromMsiPackage -MsiPath $InstallerPath -OutputPath $OutputPath -OnProgress $OnProgress) {
+                return $true
+            }
+        }
+        default {
+            # EXE and unknown binaries: extract largest embedded icon resource.
+        }
+    }
+
+    try {
+        Add-Type -AssemblyName System.Drawing -ErrorAction Stop
+        Initialize-WingetterNativeIconExtractor
+
+        if ([WingetterNativeIconExtractor]::ExtractLargestToPng($InstallerPath, $OutputPath)) {
+            if ((Test-Path $OutputPath) -and (Get-Item $OutputPath).Length -gt 0) {
+                if (Test-SavedIconQuality -OutputPath $OutputPath -MinimumSize 32) {
+                    Write-WingetterLog -Message 'Extracted largest icon resource from installer' -Level Success -OnProgress $OnProgress
+                    return $true
+                }
+            }
+        }
+    } catch {
+        Write-Verbose "Native icon extraction failed: $_"
+    }
+
+    try {
+        Add-Type -AssemblyName System.Drawing -ErrorAction Stop
+        $associated = [System.Drawing.Icon]::ExtractAssociatedIcon($InstallerPath)
+        if ($associated) {
+            try {
+                $bitmap = $associated.ToBitmap()
+                try {
+                    $bitmap.Save($OutputPath, [System.Drawing.Imaging.ImageFormat]::Png)
+                } finally {
+                    $bitmap.Dispose()
+                }
+            } finally {
+                $associated.Dispose()
+            }
+
+            if ((Test-Path $OutputPath) -and (Test-SavedIconQuality -OutputPath $OutputPath -MinimumSize 32)) {
+                Write-WingetterLog -Message 'Extracted associated shell icon from installer' -Level Success -OnProgress $OnProgress
+                return $true
+            }
+        }
+    } catch {
+        Write-WingetterLog -Message "Icon extraction failed: $_" -Level Warning -OnProgress $OnProgress
+    }
+
+    return $false
 }
 
 function Export-BestIconFromExecutable {
@@ -663,68 +972,7 @@ function Export-BestIconFromExecutable {
         [scriptblock]$OnProgress
     )
 
-    try {
-        Add-Type -AssemblyName System.Drawing -ErrorAction Stop
-
-        $associated = [System.Drawing.Icon]::ExtractAssociatedIcon($ExePath)
-        if ($associated) {
-            $bitmap = $associated.ToBitmap()
-            $bitmap.Save($OutputPath, [System.Drawing.Imaging.ImageFormat]::Png)
-            $associated.Dispose()
-            $bitmap.Dispose()
-            if ((Test-Path $OutputPath) -and (Get-Item $OutputPath).Length -gt 0) {
-                Write-WingetterLog -Message 'Extracted associated icon from installer executable' -Level Success -OnProgress $OnProgress
-                return $true
-            }
-        }
-    } catch {
-        Write-Verbose "Associated icon extraction failed: $_"
-    }
-
-    try {
-        Add-Type -TypeDefinition @"
-        using System;
-        using System.Drawing;
-        using System.Drawing.Imaging;
-        using System.Runtime.InteropServices;
-        public class WingetterIconExtractor {
-            [DllImport("shell32.dll", CharSet = CharSet.Auto)]
-            public static extern IntPtr ExtractIcon(IntPtr hInst, string lpszExeFileName, int nIconIndex);
-            [DllImport("user32.dll")]
-            public static extern bool DestroyIcon(IntPtr hIcon);
-
-            public static bool ExtractToPng(string exePath, string outputPath) {
-                for (int index = 0; index < 8; index++) {
-                    IntPtr hIcon = ExtractIcon(IntPtr.Zero, exePath, index);
-                    if (hIcon == IntPtr.Zero) { continue; }
-                    try {
-                        Icon icon = Icon.FromHandle(hIcon);
-                        using (Bitmap bmp = icon.ToBitmap()) {
-                            if (bmp.Width >= 32 && bmp.Height >= 32) {
-                                bmp.Save(outputPath, ImageFormat.Png);
-                                return true;
-                            }
-                        }
-                    } finally {
-                        DestroyIcon(hIcon);
-                    }
-                }
-                return false;
-            }
-        }
-"@ -ErrorAction SilentlyContinue
-
-        if ([WingetterIconExtractor]::ExtractToPng($ExePath, $OutputPath)) {
-            if (Test-Path $OutputPath -and (Get-Item $OutputPath).Length -gt 0) {
-                Write-WingetterLog -Message 'Extracted shell icon from installer executable' -Level Success -OnProgress $OnProgress
-                return $true
-            }
-        }
-    } catch {
-        Write-WingetterLog -Message "Icon extraction failed: $_" -Level Warning -OnProgress $OnProgress
-    }
-
-    return $false
+    return Export-BestIconFromInstaller -InstallerPath $ExePath -OutputPath $OutputPath -OnProgress $OnProgress
 }
 
 function Get-PackageIconCandidateUrls {
@@ -741,16 +989,10 @@ function Get-PackageIconCandidateUrls {
 
     Add-WingetterIconCandidates -Candidates $candidateList -Urls (Get-KnownPackageIconUrls -PackageId $PackageId -Publisher $Publisher -Homepage $Homepage) `
         -Source 'Known' -DisplayName $DisplayName -PackageId $PackageId -Homepage $Homepage
-    Add-WingetterIconCandidates -Candidates $candidateList -Urls (Get-IconUrlsFromWikimedia -DisplayName $DisplayName -PackageId $PackageId) `
-        -Source 'Wikimedia' -DisplayName $DisplayName -PackageId $PackageId -Homepage $Homepage
-    Add-WingetterIconCandidates -Candidates $candidateList -Urls (Get-IconUrlsFromClearbit -Homepage $Homepage) `
-        -Source 'Clearbit' -DisplayName $DisplayName -PackageId $PackageId -Homepage $Homepage
     Add-WingetterIconCandidates -Candidates $candidateList -Urls (Get-IconUrlsFromWingetShow -PackageId $PackageId -Version $Version) `
         -Source 'WingetShow' -DisplayName $DisplayName -PackageId $PackageId -Homepage $Homepage
     Add-WingetterIconCandidates -Candidates $candidateList -Urls (Get-IconUrlsFromWingetManifest -PackageId $PackageId -Version $Version) `
         -Source 'WingetManifest' -DisplayName $DisplayName -PackageId $PackageId -Homepage $Homepage
-    Add-WingetterIconCandidates -Candidates $candidateList -Urls (Get-IconUrlsFromWebSearch -DisplayName $DisplayName -PackageId $PackageId -Publisher $Publisher) `
-        -Source 'WebSearch' -DisplayName $DisplayName -PackageId $PackageId -Homepage $Homepage
 
     if ($Homepage) {
         Add-WingetterIconCandidates -Candidates $candidateList -Urls (Get-IconUrlsFromHomepage -Homepage $Homepage) `
@@ -759,8 +1001,12 @@ function Get-PackageIconCandidateUrls {
             -Source 'Favicon' -DisplayName $DisplayName -PackageId $PackageId -Homepage $Homepage
     }
 
+    Add-WingetterIconCandidates -Candidates $candidateList -Urls (Get-IconUrlsFromWikimedia -DisplayName $DisplayName -PackageId $PackageId) `
+        -Source 'Wikimedia' -DisplayName $DisplayName -PackageId $PackageId -Homepage $Homepage
     Add-WingetterIconCandidates -Candidates $candidateList -Urls (Get-HeuristicIconUrls -PackageId $PackageId -DisplayName $DisplayName -Publisher $Publisher -Homepage $Homepage) `
         -Source 'Heuristic' -DisplayName $DisplayName -PackageId $PackageId -Homepage $Homepage
+    Add-WingetterIconCandidates -Candidates $candidateList -Urls (Get-IconUrlsFromWebSearch -DisplayName $DisplayName -PackageId $PackageId -Publisher $Publisher) `
+        -Source 'WebSearch' -DisplayName $DisplayName -PackageId $PackageId -Homepage $Homepage
 
     $sortedCandidates = @($candidateList | Sort-Object -Property Score -Descending)
     Write-WingetterLog -Message "Resolved $($sortedCandidates.Count) icon candidate URL(s) for $PackageId" -Level Info -OnProgress $OnProgress
@@ -791,11 +1037,32 @@ function Resolve-PackageIconCandidates {
         New-Item -ItemType Directory -Path $StagingDirectory -Force | Out-Null
     }
 
-    $sortedCandidates = Get-PackageIconCandidateUrls -PackageId $PackageId -DisplayName $DisplayName `
-        -Publisher $Publisher -Homepage $Homepage -Version $Version -OnProgress $OnProgress
-
     $results = [System.Collections.ArrayList]@()
     $seenHashes = @{}
+
+    # Installer-local icons are the most trustworthy signal for Intune packaging.
+    # Prefer extracting resources / searching package PNGs before web image search.
+    if ($InstallerPath -and (Test-Path $InstallerPath)) {
+        $exeCandidatePath = Join-Path $StagingDirectory 'candidate-installer.png'
+        if (Export-BestIconFromInstaller -InstallerPath $InstallerPath -OutputPath $exeCandidatePath -OnProgress $OnProgress) {
+            $fileHash = (Get-FileHash -Path $exeCandidatePath -Algorithm SHA256).Hash
+            if (-not $seenHashes.ContainsKey($fileHash)) {
+                $seenHashes[$fileHash] = $true
+                [void]$results.Add([pscustomobject]@{
+                    Path = $exeCandidatePath
+                    Url = $InstallerPath
+                    Source = 'Installer'
+                    Score = 1100
+                    Label = "Option $($results.Count + 1)"
+                })
+            } else {
+                Remove-Item $exeCandidatePath -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+
+    $sortedCandidates = Get-PackageIconCandidateUrls -PackageId $PackageId -DisplayName $DisplayName `
+        -Publisher $Publisher -Homepage $Homepage -Version $Version -OnProgress $OnProgress
 
     foreach ($candidate in $sortedCandidates) {
         if ($results.Count -ge $MaximumCount) { break }
@@ -820,24 +1087,6 @@ function Resolve-PackageIconCandidates {
             Score = $candidate.Score
             Label = "Option $($results.Count + 1)"
         })
-    }
-
-    if ($results.Count -lt $MaximumCount -and $InstallerPath -and (Test-Path $InstallerPath) -and $InstallerPath -like '*.exe') {
-        $exeCandidatePath = Join-Path $StagingDirectory 'candidate-installer.png'
-        if (Export-BestIconFromExecutable -ExePath $InstallerPath -OutputPath $exeCandidatePath -OnProgress $OnProgress) {
-            $fileHash = (Get-FileHash -Path $exeCandidatePath -Algorithm SHA256).Hash
-            if (-not $seenHashes.ContainsKey($fileHash)) {
-                [void]$results.Add([pscustomobject]@{
-                    Path = $exeCandidatePath
-                    Url = $InstallerPath
-                    Source = 'Installer'
-                    Score = 50
-                    Label = "Option $($results.Count + 1)"
-                })
-            } else {
-                Remove-Item $exeCandidatePath -Force -ErrorAction SilentlyContinue
-            }
-        }
     }
 
     if ($results.Count -eq 0) {
@@ -884,6 +1133,13 @@ function Resolve-PackageIcon {
         [scriptblock]$OnProgress
     )
 
+    if ($InstallerPath -and (Test-Path $InstallerPath)) {
+        Write-WingetterLog -Message "Trying installer-local icon extraction for $PackageId" -Level Info -OnProgress $OnProgress
+        if (Export-BestIconFromInstaller -InstallerPath $InstallerPath -OutputPath $OutputPath -OnProgress $OnProgress) {
+            return $true
+        }
+    }
+
     $sortedCandidates = Get-PackageIconCandidateUrls -PackageId $PackageId -DisplayName $DisplayName `
         -Publisher $Publisher -Homepage $Homepage -Version $Version -OnProgress $OnProgress
 
@@ -892,10 +1148,6 @@ function Resolve-PackageIcon {
         if (Save-PackageIconFromUrl -Url $candidate.Url -OutputPath $OutputPath -OnProgress $OnProgress) {
             return $true
         }
-    }
-
-    if ($InstallerPath -and (Test-Path $InstallerPath) -and $InstallerPath -like '*.exe') {
-        return Export-BestIconFromExecutable -ExePath $InstallerPath -OutputPath $OutputPath -OnProgress $OnProgress
     }
 
     Write-WingetterLog -Message "No icon could be resolved for $PackageId" -Level Warning -OnProgress $OnProgress

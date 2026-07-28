@@ -143,11 +143,11 @@ Default output path and last-used settings are saved to:
 
 WinGetter finds app icons automatically using a ranked strategy:
 
-1. Known publisher URLs (curated for common apps)
-2. Wikimedia Commons and web image search
+1. **Installer extraction** (preferred) — largest icon from EXE/MSI, or PNG/ICO assets inside AppX/MSIX
+2. Known publisher URLs (curated for common apps)
 3. Winget manifest and `winget show` metadata
 4. Publisher homepage (favicons, Open Graph images)
-5. Installer EXE icon extraction (fallback)
+5. Wikimedia / web image search (last resort — often wrong or empty)
 
 If the auto-selected icon looks wrong, use the **post-packaging icon picker** in the GUI or supply your own PNG via **Browse Icon**.
 
