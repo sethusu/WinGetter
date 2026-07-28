@@ -1,5 +1,15 @@
 # Wingetter Changelog
 
+## Version 2.1 - 2026-07-28
+
+### Winget Search (GUI + module)
+- Search now queries **all configured Winget repositories** (`winget source list`), including `winget`, `msstore`, and any enterprise/custom sources
+- Fixed result parsing that dropped MS Store packages (non-dotted IDs) and lost the Source column on 4-column tables
+- Exact package-ID lookup via `winget show --exact`, truncated-ID resolution, and relevance ranking
+- Optional `Microsoft.WinGet.Client` structured search when installed
+- GUI search status/dialog show which repositories contributed results
+- Added Pester tests and fixtures under `Tests/`
+
 ## Version 2.0 - 2026-06-30
 
 ### GUI Reliability (follow-up)

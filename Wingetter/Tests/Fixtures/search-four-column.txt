@@ -1,0 +1,4 @@
+Name                     Id                        Version        Source
+---------------------------------------------------------------------------
+Google Chrome            Google.Chrome             131.0.6778.86  winget
+Microsoft Edge           Microsoft.Edge            131.0.2903.70  winget

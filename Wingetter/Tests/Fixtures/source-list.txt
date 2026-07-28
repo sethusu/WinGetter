@@ -1,0 +1,5 @@
+Name        Argument
+-----------------------------------------------------
+winget      https://cdn.winget.microsoft.com/cache
+msstore     https://storeedgefd.dsx.mp.microsoft.com/v9.0
+contoso     https://winget.contoso.example/api

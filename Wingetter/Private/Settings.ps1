@@ -84,7 +84,11 @@ function Test-WingetterPrerequisites {
 }
 
 function Test-WingetPackageAgreementsSupported {
-  param([ValidateSet('search', 'show', 'download')][string]$Command = 'search')
+  param([ValidateSet('search', 'show', 'download', 'source')][string]$Command = 'search')
+
+  if ($Command -eq 'source') {
+    return $false
+  }
 
   $helpOutput = & winget $Command --help 2>&1 | Out-String
   return ($helpOutput -match 'accept-package-agreements')
@@ -92,18 +96,23 @@ function Test-WingetPackageAgreementsSupported {
 
 function Invoke-WingetCli {
     param(
-        [ValidateSet('search', 'show', 'download')]
+        [ValidateSet('search', 'show', 'download', 'source')]
         [string]$Command,
         [string[]]$Arguments = @()
     )
 
     $supportsAgreements = Test-WingetPackageAgreementsSupported -Command $Command
     $wingetArguments = [System.Collections.Generic.List[string]]::new()
-    $wingetArguments.AddRange($Arguments)
+    $wingetArguments.AddRange([string[]]$Arguments)
 
-    $wingetArguments.Add('--accept-source-agreements')
-    if ($supportsAgreements) {
-        $wingetArguments.Add('--accept-package-agreements')
+    if ($Command -ne 'source') {
+        $wingetArguments.Add('--accept-source-agreements')
+        if ($supportsAgreements) {
+            $wingetArguments.Add('--accept-package-agreements')
+        }
+        if ($wingetArguments -notcontains '--disable-interactivity') {
+            $wingetArguments.Add('--disable-interactivity')
+        }
     }
 
     $output = & winget $Command @wingetArguments 2>&1

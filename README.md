@@ -128,7 +128,7 @@ Default output path and last-used settings are saved to:
 
 ## GUI features
 
-- **Winget search** with a radio-button picker when multiple packages match
+- **Winget search** across all configured repositories (`winget`, `msstore`, custom) with a radio-button picker
 - **Live progress** — step list, progress bar, and log panel
 - **Icon preview** when you select an app
 - **Icon picker after packaging** — choose among up to 3 downloaded icon candidates

@@ -111,7 +111,9 @@ function Show-WingetterSearchDialog {
     $selectButton = $dialogWindow.FindName('SelectButton')
     $cancelButton = $dialogWindow.FindName('CancelButton')
 
-    $summary.Text = "Found $($Packages.Count) result(s) for '$SearchQuery'. Select the application you want to package."
+    $sourceNames = @($Packages | ForEach-Object { if ($_.Source) { $_.Source } else { $null } } | Where-Object { $_ } | Sort-Object -Unique)
+    $sourceSuffix = if ($sourceNames.Count -gt 0) { " across: $($sourceNames -join ', ')" } else { '' }
+    $summary.Text = "Found $($Packages.Count) result(s) for '$SearchQuery'$sourceSuffix. Select the application you want to package."
 
     $dialogSelection = @{ Package = $null }
     $firstRadio = $null
@@ -582,7 +584,8 @@ function Set-PackControlsEnabled {
 
 function Update-SelectedAppDisplay {
     if ($script:selectedPackage) {
-        $selectedAppText.Text = "Selected: $($script:selectedPackage.Name) | $($script:selectedPackage.Id) | Version: $($script:selectedPackage.Version)"
+        $sourcePart = if ($script:selectedPackage.Source) { " | Source: $($script:selectedPackage.Source)" } else { '' }
+        $selectedAppText.Text = "Selected: $($script:selectedPackage.Name) | $($script:selectedPackage.Id) | Version: $($script:selectedPackage.Version)$sourcePart"
         $selectedAppText.Foreground = ConvertTo-WpfBrush '#1B2A41'
         if (-not $versionBox.Text.Trim()) {
             $versionBox.Text = if ($script:selectedPackage.Version -ne 'Unknown') { $script:selectedPackage.Version } else { '' }
@@ -618,7 +621,10 @@ function Start-PackageIconPreview {
         param($ModulePath, $SelectedPackage, $OutputPath)
         Import-Module $ModulePath -Force
         $version = if ($SelectedPackage.Version -and $SelectedPackage.Version -ne 'Unknown') { $SelectedPackage.Version } else { $null }
-        $details = Get-WingetPackageDetails -PackageId $SelectedPackage.Id -Version $version
+        $detailParams = @{ PackageId = $SelectedPackage.Id }
+        if ($version) { $detailParams.Version = $version }
+        if ($SelectedPackage.Source) { $detailParams.Source = $SelectedPackage.Source }
+        $details = Get-WingetPackageDetails @detailParams
         $homepage = if ($details.Homepage) { $details.Homepage } else { '' }
         Resolve-PackageIcon -PackageId $SelectedPackage.Id -DisplayName $SelectedPackage.Name `
             -Publisher $details.Publisher -Homepage $homepage -Version $details.Version `
@@ -675,15 +681,19 @@ function Complete-WingetterSearch {
     Save-WingetterSettings -LastSearch $Query
 
     if ($Packages.Count -eq 0) {
-        Add-LogLine -LogControl $logText -Message 'No packages found.'
-        [System.Windows.MessageBox]::Show($window, "No packages found for '$Query'.", 'Wingetter', 'OK', 'Warning') | Out-Null
+        Add-LogLine -LogControl $logText -Message 'No packages found across configured Winget repositories.'
+        [System.Windows.MessageBox]::Show($window, "No packages found for '$Query' in any configured Winget repository.", 'Wingetter', 'OK', 'Warning') | Out-Null
         return
     }
+
+    $sourceSummary = @($Packages | ForEach-Object { if ($_.Source) { $_.Source } else { 'unknown' } } | Sort-Object -Unique) -join ', '
+    Add-LogLine -LogControl $logText -Message "Found $($Packages.Count) package(s) from: $sourceSummary"
 
     $picked = Show-WingetterSearchDialog -Packages $Packages -SearchQuery $Query -OwnerWindow $window
     if ($picked) {
         $script:selectedPackage = $picked
-        Add-LogLine -LogControl $logText -Message "Selected $($script:selectedPackage.Id) version $($script:selectedPackage.Version)."
+        $sourceLabel = if ($script:selectedPackage.Source) { " [$($script:selectedPackage.Source)]" } else { '' }
+        Add-LogLine -LogControl $logText -Message "Selected $($script:selectedPackage.Id) version $($script:selectedPackage.Version)$sourceLabel."
         Update-SelectedAppDisplay
         Start-PackageIconPreview -Package $script:selectedPackage -IconPreview $iconPreview -IconStatus $iconStatus -LogText $logText
     } else {
@@ -711,8 +721,8 @@ function Invoke-WingetterSearch {
     }
 
     Set-SearchControlsEnabled -Enabled $false
-    $progressStatus.Text = 'Searching Winget...'
-    Add-LogLine -LogControl $logText -Message "Searching Winget for '$Query'..."
+    $progressStatus.Text = 'Searching all Winget repositories...'
+    Add-LogLine -LogControl $logText -Message "Searching all Winget repositories for '$Query'..."
 
     $script:searchJob = Start-WingetterBackgroundSearch -Query $Query.Trim()
     $searchQuery = $Query.Trim()
