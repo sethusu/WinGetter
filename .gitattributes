@@ -1,2 +1,5 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+
+# Windows double-click helpers should keep CRLF
+*.cmd text eol=crlf
