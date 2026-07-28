@@ -1,0 +1,5 @@
+Name                                     Id                 Version Match        Source
+---------------------------------------------------------------------------------------
+VLC media player                         VideoLAN.VLC       3.0.21  Command: vlc winget
+VLC media player                         XPDM1ZW6815MQM     Unknown              msstore
+VLC media player nightly                 VideoLAN.VLC.Nightly 4.0.0              winget

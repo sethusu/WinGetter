@@ -96,6 +96,31 @@ Describe 'Parse-WingetSearchResults' {
         $packages[1].Source | Should -Be 'winget'
     }
 
+    It 'Parses VLC Command-match rows the same way winget search vlc displays them' {
+        $fixture = Get-Content -Path (Join-Path $script:fixtureRoot 'search-vlc.txt') -Raw
+        $packages = InModuleScope Wingetter -Parameters @{ Fixture = $fixture } {
+            param($Fixture)
+            Parse-WingetSearchResults -SearchOutput $Fixture
+        }
+
+        $packages.Count | Should -BeGreaterThan 0
+        $packages.Id | Should -Contain 'VideoLAN.VLC'
+        ($packages | Where-Object { $_.Id -eq 'VideoLAN.VLC' }).Source | Should -Be 'winget'
+        $packages.Id | Should -Contain 'XPDM1ZW6815MQM'
+    }
+
+    It 'Recovers results from UTF-16 NUL-padded winget redirect output' {
+        $fixture = Get-Content -Path (Join-Path $script:fixtureRoot 'search-vlc.txt') -Raw
+        $nulPadded = (($fixture.ToCharArray() | ForEach-Object { "$_$([char]0)" }) -join '')
+
+        $packages = InModuleScope Wingetter -Parameters @{ Fixture = $nulPadded } {
+            param($Fixture)
+            Parse-WingetSearchResults -SearchOutput $Fixture
+        }
+
+        $packages.Id | Should -Contain 'VideoLAN.VLC'
+    }
+
     It 'Flags truncated package IDs' {
         $fixture = Get-Content -Path (Join-Path $script:fixtureRoot 'search-truncated-ids.txt') -Raw
         $packages = InModuleScope Wingetter -Parameters @{ Fixture = $fixture } {
@@ -194,6 +219,7 @@ Describe 'Search-WingetPackages' {
 
             Mock Get-WingetConfiguredSources { return @('winget', 'msstore') }
             Mock Find-WingetPackagesFromModule { return $null }
+            Mock Test-WingetSearchCountSupported { return $false }
             Mock Resolve-WingetTruncatedPackage { param($Package) return $Package }
             Mock Invoke-WingetCli {
                 param($Command, $Arguments)
@@ -214,10 +240,36 @@ Describe 'Search-WingetPackages' {
         $results.Id | Should -Contain 'XP89DCGQ3K6VLD'
     }
 
+    It 'Finds VLC via unscoped winget-style query output' {
+        $vlcFixture = Get-Content -Path (Join-Path $script:fixtureRoot 'search-vlc.txt') -Raw
+
+        $results = InModuleScope Wingetter -Parameters @{ VlcFixture = $vlcFixture } {
+            param($VlcFixture)
+
+            Mock Get-WingetConfiguredSources { return @('winget', 'msstore') }
+            Mock Find-WingetPackagesFromModule { return $null }
+            Mock Test-WingetSearchCountSupported { return $false }
+            Mock Resolve-WingetTruncatedPackage { param($Package) return $Package }
+            Mock Invoke-WingetCli {
+                param($Command, $Arguments)
+                if ($Command -eq 'search') {
+                    return @{ Output = $VlcFixture; ExitCode = 0; SupportsPackageAgreements = $false }
+                }
+                return @{ Output = ''; ExitCode = 1; SupportsPackageAgreements = $false }
+            }
+
+            Search-WingetPackages -Query 'VLC'
+        }
+
+        $results.Id | Should -Contain 'VideoLAN.VLC'
+        ($results | Where-Object { $_.Id -eq 'VideoLAN.VLC' }).Name | Should -Match 'VLC'
+    }
+
     It 'Uses exact show lookup for package IDs' {
         $results = InModuleScope Wingetter {
             Mock Get-WingetConfiguredSources { return @('winget') }
             Mock Find-WingetPackagesFromModule { return $null }
+            Mock Test-WingetSearchCountSupported { return $false }
             Mock Resolve-WingetTruncatedPackage { param($Package) return $Package }
             Mock Invoke-WingetCli {
                 param($Command, $Arguments)
