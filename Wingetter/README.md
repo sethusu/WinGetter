@@ -57,7 +57,7 @@ Or launch via the main script with no parameters:
 1. Enter an app name or Winget package ID (e.g. `Google.Chrome`, `webstorm`) and click **Search**.
    Search queries **every configured Winget repository** (`winget`, `msstore`, and any custom sources).
 2. A **search dialog** opens with **radio buttons** — each result shows version and source; select the app you want to package and click **Select**.
-3. Choose an **output destination** (defaults to `Documents\Wingetter Output`).
+3. Choose an **output destination** (defaults to `Documents\Wingetter\{PackageId}` after you select an app).
 4. Optionally set a specific **version** or **custom icon**.
 5. Click **Create Package** and watch the **live progress tracker** and step list.
 6. Preview the resolved **icon** in the right panel.
@@ -79,7 +79,7 @@ Or launch via the main script with no parameters:
 |---|---|
 | `AppName` | Winget package ID or search term. Omit to launch the GUI. |
 | `Version` | Optional specific version to download. |
-| `OutputPath` | Base output directory. Defaults to saved settings. |
+| `OutputPath` | Base output directory. Defaults to `Documents\Wingetter`; each package is written to `{OutputPath}\{PackageId}\`. |
 | `IconPath` | Optional custom PNG icon path. |
 | `UseGui` | Force the graphical interface. |
 

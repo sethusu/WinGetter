@@ -80,7 +80,7 @@ Or launch the GUI directly:
 
 4. **Search** for an app (e.g. `Google.Chrome`, `7zip.7zip`, `Valve.Steam`).
 5. **Select** the correct package from the search dialog.
-6. Choose an **output folder** (default: `Documents\Wingetter Output`).
+6. Choose an **output folder** (default base: `Documents\Wingetter`; each app uses a subfolder named after its package ID).
 7. Click **Create Package** and wait for the progress steps to finish.
 8. If multiple icons were found, pick the best match in the **icon picker** dialog.
 9. Open the output folder and upload the `.intunewin` to Intune using the included `README.md` as your field guide.
@@ -122,7 +122,7 @@ cd Wingetter
 ## Output folder layout
 
 ```
-Documents\Wingetter Output\
+Documents\Wingetter\
 └── Google.Chrome\
     ├── logo.png
     └── 131.0.6778.86\
