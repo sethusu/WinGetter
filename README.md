@@ -46,6 +46,23 @@ Install-WingetterContentPrepTool
 
 ## Quick start (GUI — recommended)
 
+### Option A — Double-click `Wingetter.exe` (easiest)
+
+1. On a Windows machine, build once from the repo:
+
+```powershell
+cd Wingetter
+.\Build\Build-WingetterExe.ps1
+```
+
+2. Open `dist\Wingetter\` (or unzip `dist\Wingetter-portable.zip` on another PC).
+3. Double-click **Wingetter.exe** — no elevated PowerShell required.
+4. Keep the whole folder together (`Gui\`, `Private\`, `Wingetter.psd1` must stay next to the exe).
+
+From the source tree without building, you can also double-click `Wingetter\Start-Wingetter.cmd`.
+
+### Option B — Run from PowerShell
+
 1. **Clone or download** this repository.
 2. Open **PowerShell** (not necessarily elevated).
 3. Run:
@@ -163,7 +180,8 @@ If the auto-selected icon looks wrong, use the **post-packaging icon picker** in
 | Packaging failed | Check `wingetter-packaging.log` in the version output folder and the GUI log panel |
 | Wrong icon | Use the icon picker after packaging, or set a custom PNG before packaging |
 | Detection fails on devices | Run `detection.ps1` locally; review logs in `%ProgramData%\Microsoft\IntuneManagementExtension\Logs\` |
-| GUI won't start | Run from PowerShell 5.1+ on Windows; WPF requires a desktop session |
+| GUI won't start | Double-click `Wingetter.exe` from a built `dist\Wingetter` folder, or run from PowerShell 5.1+ on Windows; WPF requires a desktop session |
+| Antivirus blocks `Wingetter.exe` | ps2exe wrappers are occasionally flagged; build from source with `.\Build\Build-WingetterExe.ps1` or use `Start-Wingetter.cmd` / the `.ps1` entry points |
 
 More detail: [Wingetter/README.md](Wingetter/README.md)
 
@@ -174,7 +192,14 @@ More detail: [Wingetter/README.md](Wingetter/README.md)
 ```
 WinGetter/
 ├── README.md                          ← You are here
+├── dist/                              ← Created by the build script (not committed)
+│   ├── Wingetter/                     ← Portable folder (double-click Wingetter.exe)
+│   └── Wingetter-portable.zip
 └── Wingetter/
+    ├── Launch-Wingetter.ps1           ← ps2exe / double-click launcher
+    ├── Start-Wingetter.cmd            ← Source-tree double-click helper
+    ├── Build/
+    │   └── Build-WingetterExe.ps1     ← Compiles Wingetter.exe with ps2exe
     ├── Create-IntuneWinFromWinget.ps1 ← CLI entry point (no args = GUI)
     ├── Gui/
     │   ├── Start-WingetterGui.ps1
