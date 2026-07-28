@@ -7,6 +7,7 @@
 - Added `Build\Build-WingetterExe.ps1` to compile a portable `Wingetter.exe` with the PowerShell Gallery `ps2exe` module and stage `dist\Wingetter\` (+ zip)
 - Added `Start-Wingetter.cmd` for double-click launch from the source tree before building an `.exe`
 - End users keep `Wingetter.exe` next to `Gui\`, `Private\`, and `Wingetter.psd1` — no admin terminal required
+- Compiled `Wingetter.exe` launches the GUI in a separate Windows PowerShell 5.1 process (avoids ps2exe host parse errors on regex `{n,}` patterns in `Private\Winget.ps1`)
 
 ## Version 2.1.4 - 2026-07-28
 

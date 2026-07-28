@@ -59,6 +59,8 @@ cd Wingetter
 3. Double-click **Wingetter.exe** — no elevated PowerShell required.
 4. Keep the whole folder together (`Gui\`, `Private\`, `Wingetter.psd1` must stay next to the exe).
 
+The exe is a thin stub that starts the GUI in Windows PowerShell 5.1 (separate process).
+
 From the source tree without building, you can also double-click `Wingetter\Start-Wingetter.cmd`.
 
 ### Option B — Run from PowerShell

@@ -48,7 +48,14 @@ foreach ($script in @(
 }
 
 $launcher = Get-Content -LiteralPath (Join-Path $root 'Launch-Wingetter.ps1') -Raw
-foreach ($needle in @('Get-WingetterAppRoot', 'Start-WingetterGui.ps1', 'Show-WingetterStartupError')) {
+foreach ($needle in @(
+        'Get-WingetterAppRoot'
+        'Start-WingetterGui.ps1'
+        'Show-WingetterStartupError'
+        'Start-WingetterGuiProcess'
+        'WindowsPowerShell\v1.0\powershell.exe'
+        'isCompiled'
+    )) {
     if ($launcher -notmatch [regex]::Escape($needle)) {
         $failures += "Launch-Wingetter.ps1 missing expected content: $needle"
     }
