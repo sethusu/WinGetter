@@ -97,10 +97,10 @@ function Invoke-WingetterPackaging {
             -InstallScript $installScript -UninstallScript $uninstallScript -IconFilePath $iconFilePath
 
         Write-WingetterProgress -Step 10 -TotalSteps $totalSteps -StepName 'Packaging .intunewin' -Percent 88 -OnProgress $OnProgress
-        $intunewinCmd = Get-Command intunewinapputil -ErrorAction SilentlyContinue
+        $contentPrepPath = Resolve-ContentPrepToolPath
         $packagingSucceeded = $false
-        if (-not $intunewinCmd) {
-            Write-WingetterLog -Message 'intunewinapputil not found. Install Microsoft Win32 Content Prep Tool and ensure it is on PATH.' -Level Warning -OnProgress $OnProgress
+        if (-not $contentPrepPath) {
+            Write-WingetterLog -Message 'intunewinapputil not found. Use Install-WingetterContentPrepTool or install Microsoft Win32 Content Prep Tool and ensure it is on PATH.' -Level Warning -OnProgress $OnProgress
             Write-WingetterProgress -Step 12 -TotalSteps $totalSteps -StepName 'Complete with warnings' -Percent 100 -Message 'Metadata created, but Content Prep Tool is unavailable.' -Status Completed -OnProgress $OnProgress
         } else {
             $outputDirectory = Split-Path $versionDirectory -Parent
@@ -110,7 +110,7 @@ function Invoke-WingetterPackaging {
             }
 
             try {
-                & intunewinapputil -c $versionDirectory -s $installerFile.Name -o $outputDirectory -q
+                & $contentPrepPath -c $versionDirectory -s $installerFile.Name -o $outputDirectory -q
                 if ($LASTEXITCODE -eq 0 -and (Test-Path $intunewinFile)) {
                     $packagingSucceeded = $true
                     $intunewinSize = [math]::Round((Get-Item $intunewinFile).Length / 1MB, 2)

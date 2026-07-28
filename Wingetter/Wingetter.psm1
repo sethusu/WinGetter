@@ -23,6 +23,7 @@ Export-ModuleMember -Function @(
     'Get-WingetterSettings'
     'Save-WingetterSettings'
     'Test-WingetterPrerequisites'
+    'Install-WingetterContentPrepTool'
     'Resolve-PackageIcon'
     'Resolve-PackageIconCandidates'
     'Set-WingetterPackageIconFiles'

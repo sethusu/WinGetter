@@ -1,5 +1,12 @@
 # Wingetter Changelog
 
+## Version 2.1.2 - 2026-07-28
+
+### Content Prep dependency helper
+- Added `Install-WingetterContentPrepTool` to install `Microsoft.Win32ContentPrepTool` via winget
+- Stronger Content Prep discovery (PATH refresh + common WinGet Links / install locations)
+- GUI shows an **Install Content Prep** button when the tool is missing
+
 ## Version 2.1.1 - 2026-07-28
 
 ### Winget Search parity (VLC / short queries)

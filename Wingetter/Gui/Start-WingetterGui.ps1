@@ -517,6 +517,7 @@ $mainXamlPath = Join-Path $PSScriptRoot 'Wingetter.MainWindow.xaml'
 $window = Read-XamlWindow -XamlPath $mainXamlPath
 
 $prereqText = $window.FindName('PrereqStatusText')
+$installContentPrepButton = $window.FindName('InstallContentPrepButton')
 $searchBox = $window.FindName('SearchBox')
 $searchButton = $window.FindName('SearchButton')
 $selectAppButton = $window.FindName('SelectAppButton')
@@ -543,6 +544,8 @@ $script:searchTimer = $null
 $script:packTimer = $null
 $script:packWorker = $null
 $script:progressQueue = $null
+$script:contentPrepInstallJob = $null
+$script:contentPrepInstallTimer = $null
 
 $stepMap = @{
     1 = 0; 2 = 1; 3 = 2; 4 = 3; 5 = 4; 6 = 5; 7 = 6; 8 = 7; 9 = 8; 10 = 9; 12 = 10
@@ -553,14 +556,40 @@ $outputPathBox.Text = $settings.OutputPath
 $searchBox.Text = $settings.LastSearch
 Initialize-StepList -ListControl $stepList
 
-$prereqs = Test-WingetterPrerequisites
-if ($prereqs.Issues.Count -eq 0) {
-    $prereqText.Text = "Ready | Winget $($prereqs.WingetVersion) | Content Prep Tool: $($prereqs.ContentPrepToolPath)"
-    $prereqText.Foreground = ConvertTo-WpfBrush '#2E7D32'
-} else {
-    $prereqText.Text = 'Missing prerequisites: ' + ($prereqs.Issues -join ' ')
-    $prereqText.Foreground = ConvertTo-WpfBrush '#C62828'
+function Update-PrereqStatusDisplay {
+    param(
+        [object]$Prerequisites = $null
+    )
+
+    if (-not $Prerequisites) {
+        $Prerequisites = Test-WingetterPrerequisites
+    }
+
+    if ($Prerequisites.Issues.Count -eq 0) {
+        $prereqText.Text = "Ready | Winget $($Prerequisites.WingetVersion) | Content Prep Tool: $($Prerequisites.ContentPrepToolPath)"
+        $prereqText.Foreground = ConvertTo-WpfBrush '#2E7D32'
+    } else {
+        $prereqText.Text = 'Missing prerequisites: ' + ($Prerequisites.Issues -join ' ')
+        $prereqText.Foreground = ConvertTo-WpfBrush '#C62828'
+    }
+
+    $showInstall = -not [bool]$Prerequisites.ContentPrepToolInstalled
+    if ($showInstall) {
+        $installContentPrepButton.Visibility = [System.Windows.Visibility]::Visible
+        $installContentPrepButton.IsEnabled = [bool]$Prerequisites.WingetInstalled
+        if (-not $Prerequisites.WingetInstalled) {
+            $installContentPrepButton.ToolTip = 'Winget is required to install the Content Prep Tool.'
+        } else {
+            $installContentPrepButton.ToolTip = 'Install Microsoft Win32 Content Prep Tool (intunewinapputil) via winget'
+        }
+    } else {
+        $installContentPrepButton.Visibility = [System.Windows.Visibility]::Collapsed
+    }
+
+    return $Prerequisites
 }
+
+$null = Update-PrereqStatusDisplay
 
 function Set-SearchControlsEnabled {
     param([bool]$Enabled)
@@ -577,6 +606,14 @@ function Set-PackControlsEnabled {
     $searchBox.IsEnabled = $Enabled
     $browseOutputButton.IsEnabled = $Enabled
     $browseIconButton.IsEnabled = $Enabled
+    if ($installContentPrepButton.Visibility -eq [System.Windows.Visibility]::Visible) {
+        if (-not $Enabled) {
+            $installContentPrepButton.IsEnabled = $false
+        } else {
+            # Keep disabled when Winget itself is missing (tooltip explains why).
+            $installContentPrepButton.IsEnabled = ($installContentPrepButton.ToolTip -notlike '*Winget is required*')
+        }
+    }
     if (-not $Enabled) {
         $openOutputButton.IsEnabled = $false
     }
@@ -929,12 +966,95 @@ $packButton.Add_Click({
     Start-WingetterPackagingFromUi
 })
 
+$installContentPrepButton.Add_Click({
+    if ($script:isRunning -or $script:contentPrepInstallJob) { return }
+
+    $confirm = [System.Windows.MessageBox]::Show(
+        $window,
+        "Install Microsoft Win32 Content Prep Tool via winget?`n`nwinget install --exact --id Microsoft.Win32ContentPrepTool",
+        'Wingetter',
+        'YesNo',
+        'Question'
+    )
+    if ($confirm -ne [System.Windows.MessageBoxResult]::Yes) { return }
+
+    $installContentPrepButton.IsEnabled = $false
+    $prereqText.Text = 'Installing Content Prep Tool via winget...'
+    $prereqText.Foreground = ConvertTo-WpfBrush '#5C6B7A'
+    Add-LogLine -LogControl $logText -Message 'Installing Microsoft.Win32ContentPrepTool via winget...'
+
+    $script:contentPrepInstallJob = Start-Job -ArgumentList $modulePath -ScriptBlock {
+        param($ModulePath)
+        Import-Module $ModulePath -Force
+        Install-WingetterContentPrepTool
+    }
+
+    if ($script:contentPrepInstallTimer) {
+        $script:contentPrepInstallTimer.Stop()
+    }
+
+    $script:contentPrepInstallTimer = New-Object System.Windows.Threading.DispatcherTimer
+    $script:contentPrepInstallTimer.Interval = [TimeSpan]::FromMilliseconds(250)
+    $script:contentPrepInstallTimer.Add_Tick({
+        if (-not $script:contentPrepInstallJob -or $script:contentPrepInstallJob.State -eq 'Running') { return }
+
+        $script:contentPrepInstallTimer.Stop()
+        $job = $script:contentPrepInstallJob
+        $script:contentPrepInstallJob = $null
+        $script:contentPrepInstallTimer = $null
+
+        try {
+            if ($job.State -eq 'Failed') {
+                $err = Receive-Job -Job $job -ErrorAction SilentlyContinue
+                throw (($err | Out-String).Trim())
+            }
+
+            $result = Receive-Job -Job $job
+            if ($result -is [array] -and $result.Count -eq 1) {
+                $result = $result[0]
+            }
+
+            $prereqs = if ($result.Prerequisites) { $result.Prerequisites } else { Test-WingetterPrerequisites }
+            $null = Update-PrereqStatusDisplay -Prerequisites $prereqs
+
+            if ($result.Succeeded -and $prereqs.ContentPrepToolInstalled) {
+                $pathNote = if ($result.ContentPrepToolPath) { $result.ContentPrepToolPath } else { 'available on PATH' }
+                Add-LogLine -LogControl $logText -Message "Content Prep Tool installed: $pathNote"
+                [System.Windows.MessageBox]::Show(
+                    $window,
+                    "Content Prep Tool is ready.`n`n$pathNote",
+                    'Wingetter',
+                    'OK',
+                    'Information'
+                ) | Out-Null
+            } else {
+                throw 'Install finished but intunewinapputil is still not available. You may need to restart Wingetter or add the tool to PATH.'
+            }
+        } catch {
+            Add-LogLine -LogControl $logText -Message "Content Prep Tool install failed: $($_.Exception.Message)"
+            $null = Update-PrereqStatusDisplay
+            [System.Windows.MessageBox]::Show(
+                $window,
+                "Could not install the Content Prep Tool.`n`n$($_.Exception.Message)",
+                'Wingetter',
+                'OK',
+                'Error'
+            ) | Out-Null
+        } finally {
+            Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+        }
+    })
+    $script:contentPrepInstallTimer.Start()
+})
+
 $window.Add_Closed({
     if ($script:searchTimer) { $script:searchTimer.Stop() }
     if ($script:packTimer) { $script:packTimer.Stop() }
     if ($script:iconPreviewTimer) { $script:iconPreviewTimer.Stop() }
+    if ($script:contentPrepInstallTimer) { $script:contentPrepInstallTimer.Stop() }
     if ($script:searchJob) { Remove-Job -Job $script:searchJob -Force -ErrorAction SilentlyContinue }
     if ($script:iconPreviewJob) { Remove-Job -Job $script:iconPreviewJob -Force -ErrorAction SilentlyContinue }
+    if ($script:contentPrepInstallJob) { Remove-Job -Job $script:contentPrepInstallJob -Force -ErrorAction SilentlyContinue }
     if ($script:packWorker -and $script:packWorker.PowerShell) {
         try { $script:packWorker.PowerShell.Stop() } catch { }
         $script:packWorker.PowerShell.Dispose()

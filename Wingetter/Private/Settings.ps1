@@ -50,6 +50,47 @@ function Save-WingetterSettings {
     $current | ConvertTo-Json | Set-Content -Path $settingsPath -Encoding UTF8
 }
 
+function Update-WingetterSessionPath {
+    $machinePath = [System.Environment]::GetEnvironmentVariable('Path', 'Machine')
+    $userPath = [System.Environment]::GetEnvironmentVariable('Path', 'User')
+    $parts = @($machinePath, $userPath) | Where-Object { $_ }
+    if ($parts.Count -gt 0) {
+        $env:Path = ($parts -join ';')
+    }
+}
+
+function Resolve-ContentPrepToolPath {
+    Update-WingetterSessionPath
+
+    $commandNames = @('intunewinapputil', 'IntuneWinAppUtil')
+    foreach ($name in $commandNames) {
+        $cmd = Get-Command $name -ErrorAction SilentlyContinue
+        if ($cmd -and $cmd.Source) {
+            return [string]$cmd.Source
+        }
+    }
+
+    $candidates = [System.Collections.Generic.List[string]]::new()
+    $candidates.Add((Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Links\IntuneWinAppUtil.exe'))
+    $candidates.Add((Join-Path $env:LOCALAPPDATA 'Microsoft\WinGet\Links\intunewinapputil.exe'))
+
+    $programFilesX86 = ${env:ProgramFiles(x86)}
+    if ($programFilesX86) {
+        $candidates.Add((Join-Path $programFilesX86 'Microsoft Win32 Content Prep Tool\IntuneWinAppUtil.exe'))
+    }
+    if ($env:ProgramFiles) {
+        $candidates.Add((Join-Path $env:ProgramFiles 'Microsoft Win32 Content Prep Tool\IntuneWinAppUtil.exe'))
+    }
+
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path -LiteralPath $candidate)) {
+            return $candidate
+        }
+    }
+
+    return $null
+}
+
 function Test-WingetterPrerequisites {
     $results = [ordered]@{
         WingetInstalled = $false
@@ -61,10 +102,11 @@ function Test-WingetterPrerequisites {
     }
 
     try {
-        $wingetVersion = winget --version 2>&1
+        $wingetExe = Get-WingetExecutable
+        $wingetVersion = & $wingetExe --version 2>&1
         if ($LASTEXITCODE -eq 0) {
             $results.WingetInstalled = $true
-            $results.WingetVersion = ($wingetVersion | Out-String).Trim()
+            $results.WingetVersion = ($wingetVersion | Out-String).Trim() -replace "`0", ''
         } else {
             $results.Issues += 'Winget is not installed or not available on PATH.'
         }
@@ -72,15 +114,113 @@ function Test-WingetterPrerequisites {
         $results.Issues += "Winget check failed: $_"
     }
 
-    $intunewinCmd = Get-Command intunewinapputil -ErrorAction SilentlyContinue
-    if ($intunewinCmd) {
+    $contentPrepPath = Resolve-ContentPrepToolPath
+    if ($contentPrepPath) {
         $results.ContentPrepToolInstalled = $true
-        $results.ContentPrepToolPath = $intunewinCmd.Source
+        $results.ContentPrepToolPath = $contentPrepPath
     } else {
         $results.Issues += 'Microsoft Win32 Content Prep Tool (intunewinapputil) was not found on PATH.'
     }
 
     return [PSCustomObject]$results
+}
+
+function Install-WingetterContentPrepTool {
+    <#
+    .SYNOPSIS
+        Installs the Microsoft Win32 Content Prep Tool via winget.
+    .DESCRIPTION
+        Runs `winget install --exact --id Microsoft.Win32ContentPrepTool` non-interactively,
+        refreshes the session PATH, and re-checks whether intunewinapputil is available.
+    .PARAMETER PackageId
+        Winget package ID. Defaults to Microsoft.Win32ContentPrepTool.
+    .PARAMETER Force
+        Pass --force to winget install.
+    .EXAMPLE
+        Install-WingetterContentPrepTool
+    #>
+    [CmdletBinding()]
+    param(
+        [string]$PackageId = 'Microsoft.Win32ContentPrepTool',
+        [switch]$Force
+    )
+
+    $alreadyPresent = Resolve-ContentPrepToolPath
+    if ($alreadyPresent -and -not $Force) {
+        return [PSCustomObject]@{
+            Succeeded = $true
+            AlreadyInstalled = $true
+            ExitCode = 0
+            PackageId = $PackageId
+            ContentPrepToolPath = $alreadyPresent
+            Output = "Content Prep Tool is already available at $alreadyPresent"
+            Prerequisites = Test-WingetterPrerequisites
+        }
+    }
+
+    $wingetExe = $null
+    try {
+        $wingetExe = Get-WingetExecutable
+        $null = & $wingetExe --version 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Winget returned a non-zero exit code.'
+        }
+    } catch {
+        throw "Winget is required to install the Content Prep Tool. $_"
+    }
+
+    $wingetArguments = [System.Collections.Generic.List[string]]::new()
+    $wingetArguments.AddRange([string[]]@(
+        'install'
+        '--exact'
+        '--id'
+        $PackageId
+        '--accept-source-agreements'
+        '--accept-package-agreements'
+        '--disable-interactivity'
+    ))
+    if ($Force) {
+        $wingetArguments.Add('--force')
+    }
+
+    $previousOutputEncoding = [Console]::OutputEncoding
+    $previousPreference = $OutputEncoding
+    try {
+        [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+        $OutputEncoding = [System.Text.Encoding]::UTF8
+        $output = & $wingetExe @wingetArguments 2>&1
+        $exitCode = $LASTEXITCODE
+    } finally {
+        [Console]::OutputEncoding = $previousOutputEncoding
+        $OutputEncoding = $previousPreference
+    }
+
+    $outputText = (($output | Out-String) -replace "`0", '').Trim()
+    # 0 = success; -1978335189 / 0x8A15002B = no applicable upgrade / already installed
+    $alreadyInstalledExit = -1978335189
+    $succeeded = ($exitCode -eq 0 -or $exitCode -eq $alreadyInstalledExit)
+
+    Update-WingetterSessionPath
+    $contentPrepPath = Resolve-ContentPrepToolPath
+    if ($contentPrepPath) {
+        $succeeded = $true
+    }
+
+    $prereqs = Test-WingetterPrerequisites
+    if (-not $succeeded) {
+        $message = if ($outputText) { $outputText } else { "winget install failed with exit code $exitCode" }
+        throw "Failed to install Content Prep Tool ($PackageId). $message"
+    }
+
+    return [PSCustomObject]@{
+        Succeeded = $true
+        AlreadyInstalled = ($exitCode -eq $alreadyInstalledExit -or [bool]$alreadyPresent)
+        ExitCode = $exitCode
+        PackageId = $PackageId
+        ContentPrepToolPath = $contentPrepPath
+        Output = $outputText
+        Prerequisites = $prereqs
+    }
 }
 
 $script:WingetExePath = $null

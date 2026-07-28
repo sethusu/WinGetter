@@ -1,5 +1,5 @@
 @{
-    ModuleVersion     = '2.1.1'
+    ModuleVersion     = '2.1.2'
     GUID              = 'a3f8c2e1-9b4d-4f7a-8e6c-1d2b3a4c5e6f'
     Author            = 'Wingetter'
     CompanyName       = 'Wingetter'
@@ -14,6 +14,7 @@
         'Get-WingetterSettings'
         'Save-WingetterSettings'
         'Test-WingetterPrerequisites'
+        'Install-WingetterContentPrepTool'
         'Resolve-PackageIcon'
         'Resolve-PackageIconCandidates'
         'Set-WingetterPackageIconFiles'

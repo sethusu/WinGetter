@@ -30,7 +30,7 @@ For each application, WinGetter produces:
 |-------------|-------|
 | **Windows 10/11** | PowerShell 5.1 or later |
 | **[Winget](https://learn.microsoft.com/en-us/windows/package-manager/winget/)** | `winget --version` must work in your shell |
-| **[Win32 Content Prep Tool](https://github.com/microsoft/Microsoft-Win32-Content-Prep-Tool)** | `intunewinapputil` must be on your PATH |
+| **[Win32 Content Prep Tool](https://github.com/microsoft/Microsoft-Win32-Content-Prep-Tool)** | `intunewinapputil` on PATH — install with `winget install --exact --id Microsoft.Win32ContentPrepTool` or the GUI **Install Content Prep** button |
 
 Run the built-in check from PowerShell:
 
@@ -38,6 +38,8 @@ Run the built-in check from PowerShell:
 cd Wingetter
 Import-Module .\Wingetter.psd1
 Test-WingetterPrerequisites
+# If Content Prep Tool is missing:
+Install-WingetterContentPrepTool
 ```
 
 ---
@@ -156,7 +158,8 @@ If the auto-selected icon looks wrong, use the **post-packaging icon picker** in
 | Problem | What to try |
 |---------|-------------|
 | `winget` not found | Install [App Installer](https://apps.microsoft.com/detail/9NBLGGH4NNS1) from the Microsoft Store |
-| `intunewinapputil` not found | Install the [Content Prep Tool](https://github.com/microsoft/Microsoft-Win32-Content-Prep-Tool) and add it to PATH |
+| `intunewinapputil` not found | Click **Install Content Prep** in the GUI, run `Install-WingetterContentPrepTool`, or `winget install --exact --id Microsoft.Win32ContentPrepTool` |
+
 | Packaging failed | Check `wingetter-packaging.log` in the version output folder and the GUI log panel |
 | Wrong icon | Use the icon picker after packaging, or set a custom PNG before packaging |
 | Detection fails on devices | Run `detection.ps1` locally; review logs in `%ProgramData%\Microsoft\IntuneManagementExtension\Logs\` |
