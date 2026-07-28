@@ -173,8 +173,9 @@ Get-WingetterSettings
 
 ### Search returns few or no results
 
-- Confirm repositories with `winget source list` (WinGetter searches each listed source)
-- Try the exact package ID (e.g. `Google.Chrome`) — exact IDs resolve via `winget show --exact`
+- Confirm repositories with `winget source list` (WinGetter searches an unscoped query first, then each listed source)
+- Try the same term in a terminal: `winget search VLC` — WinGetter now follows that query matching (name/id/moniker/tags/commands)
+- Try the exact package ID (e.g. `VideoLAN.VLC` / `Google.Chrome`) — exact IDs resolve via `winget show --exact`
 - For the most reliable structured search on Windows, install `Microsoft.WinGet.Client`
 
 ### Packaging failed

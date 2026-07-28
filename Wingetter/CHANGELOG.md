@@ -1,5 +1,13 @@
 # Wingetter Changelog
 
+## Version 2.1.1 - 2026-07-28
+
+### Winget Search parity (VLC / short queries)
+- Match `winget search` semantics: unscoped query first (name/id/moniker/tags/commands), then per-source
+- Use `Find-WinGetPackage -Query` instead of `-Name` when Microsoft.WinGet.Client is installed
+- Fix UTF-16 NUL-padded redirected winget output that caused empty GUI results (e.g. searching `VLC`)
+- Resolve real `winget.exe` path for background jobs; only pass `--count` when supported
+
 ## Version 2.1 - 2026-07-28
 
 ### Winget Search (GUI + module)

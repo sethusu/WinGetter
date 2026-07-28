@@ -4,13 +4,22 @@ function ConvertTo-WingetOutputLines {
     if ($null -eq $Output) {
         return @()
     }
+
+    $normalize = {
+        param($Value)
+        # winget redirected stdout is frequently UTF-16 interpreted as a narrow encoding,
+        # which inserts a NUL between every character. Strip those so table headers match.
+        $text = "$Value" -replace "`0", ''
+        return $text.TrimEnd("`r")
+    }
+
     if ($Output -is [string]) {
-        return @($Output -split "`r?`n" | ForEach-Object { $_.TrimEnd("`r") })
+        return @($Output -split "`r?`n" | ForEach-Object { & $normalize $_ })
     }
     if ($Output -is [array]) {
-        return @($Output | ForEach-Object { "$_".TrimEnd("`r") })
+        return @($Output | ForEach-Object { & $normalize $_ })
     }
-    return @("$Output".TrimEnd("`r"))
+    return @(& $normalize $Output)
 }
 
 function Test-WingetPackageId {
@@ -241,7 +250,9 @@ function Parse-WingetSearchResults {
     }
 
     if ($headerIndex -lt 0) {
-        return @()
+        # Header missing (encoding damage or atypical output). Fall back to loose row parsing
+        # so substring matches like `winget search vlc` still surface VideoLAN.VLC.
+        return @(Parse-WingetSearchResultsLoose -Lines $lines -DefaultSource $DefaultSource)
     }
 
     $columnMap = Get-WingetTableColumnMap -HeaderLine $lines[$headerIndex]
@@ -434,12 +445,16 @@ function Find-WingetPackagesFromModule {
 
     try {
         Import-Module Microsoft.WinGet.Client -ErrorAction Stop
-        $params = @{ Name = $Query }
+
+        # Match winget CLI search semantics: Query does case-insensitive substring
+        # matching across name/id/moniker (and related fields). -Name alone is too narrow
+        # and can miss packages like VLC that match via moniker/command.
         if ($Exact) {
-            $params = @{ Id = $Query }
+            $results = Find-WinGetPackage -Id $Query -ErrorAction Stop
+        } else {
+            $results = Find-WinGetPackage -Query $Query -ErrorAction Stop
         }
 
-        $results = Find-WinGetPackage @params -ErrorAction Stop
         if (-not $results) {
             return @()
         }
@@ -566,6 +581,51 @@ function Add-WingetPackageUnique {
     $Target.Add($Package)
 }
 
+function Parse-WingetSearchResultsLoose {
+    param(
+        [string[]]$Lines,
+        [string]$DefaultSource = ''
+    )
+
+    $packages = [System.Collections.Generic.List[object]]::new()
+
+    foreach ($line in $Lines) {
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        if ($line -match '(?i)No package found matching input criteria') { return @() }
+        if ($line -match '█|▒|\bKB\b|\bMB\b|%' ) { continue }
+        if ($line -match '^\s*Name\s+Id\s+Version') { continue }
+        if ($line -match '^-+$') { continue }
+
+        # Publisher.Package Id with a version somewhere after it
+        if ($line -match '(?i)\b([A-Za-z0-9][A-Za-z0-9_-]*\.[A-Za-z0-9][A-Za-z0-9._-]*)\b.*?\b(\d+(?:\.\d+[0-9A-Za-z_-]*)+)\b') {
+            $id = Normalize-WingetPackageId -Id $matches[1]
+            $version = $matches[2]
+            $name = $line.Substring(0, $line.IndexOf($matches[1])).Trim()
+            if ([string]::IsNullOrWhiteSpace($name)) { $name = $id }
+            $source = Get-WingetSourceFromSearchLine -Line $line -DefaultSource $DefaultSource
+            if (Test-WingetSearchRow -Name $name -Id $id -Version $version) {
+                $packages.Add((New-WingetPackageResult -Name $name -Id $id -Version $version -Source $source -TruncatedId:($id -match '…|\.\.\.$')))
+            }
+            continue
+        }
+
+        # MS Store style product codes
+        if ($line -match '(?i)\b(XP[A-Z0-9]{12,}|9[A-Z0-9]{12,})\b') {
+            $id = $matches[1]
+            $name = $line.Substring(0, $line.IndexOf($id)).Trim()
+            if ([string]::IsNullOrWhiteSpace($name)) { $name = $id }
+            $version = 'Unknown'
+            if ($line -match '\b(\d+(?:\.\d+[0-9A-Za-z_-]*)+)\b') {
+                $version = $matches[1]
+            }
+            $source = Get-WingetSourceFromSearchLine -Line $line -DefaultSource $(if ($DefaultSource) { $DefaultSource } else { 'msstore' })
+            $packages.Add((New-WingetPackageResult -Name $name -Id $id -Version $version -Source $source -TruncatedId:$false))
+        }
+    }
+
+    return @($packages)
+}
+
 function Search-WingetPackages {
     [CmdletBinding()]
     param(
@@ -597,7 +657,7 @@ function Search-WingetPackages {
         }
     }
 
-    # Prefer structured WinGet PowerShell module when present (covers all configured sources)
+    # Prefer structured WinGet PowerShell module when present (Query ~= winget search)
     $moduleResults = Find-WingetPackagesFromModule -Query $trimmedQuery -Exact:($looksLikeId)
     if ($null -ne $moduleResults) {
         foreach ($pkg in $moduleResults) {
@@ -605,29 +665,38 @@ function Search-WingetPackages {
         }
     }
 
-    # Always also search every configured winget repository via CLI so GUI results
-    # include winget, msstore, and any enterprise/custom sources.
-    $sources = @(Get-WingetConfiguredSources)
-    if ($sources.Count -eq 0) {
-        $sources = @('')
-    }
-
     $countArgs = @()
-    if ($MaxResultsPerSource -gt 0) {
+    if ($MaxResultsPerSource -gt 0 -and (Test-WingetSearchCountSupported)) {
         $countArgs = @('--count', "$MaxResultsPerSource")
     }
 
-    foreach ($source in $sources) {
-        $searchArgs = @($trimmedQuery) + $countArgs
-        if ($source) {
-            $searchArgs += @('--source', $source)
+    # 1) Unscoped search first — same as typing `winget search VLC` in a terminal.
+    #    Winget substring-matches name, id, moniker, tags, and commands across all sources.
+    try {
+        $result = Invoke-WingetCli -Command search -Arguments (@($trimmedQuery) + $countArgs)
+        $parsed = Parse-WingetSearchResults -SearchOutput $result.Output
+        foreach ($pkg in $parsed) {
+            Add-WingetPackageUnique -Target $packages -Package $pkg
         }
+        if ($result.ExitCode -ne 0 -and $parsed.Count -eq 0 -and $packages.Count -eq 0) {
+            $errors.Add("unscoped search exit $($result.ExitCode)")
+        }
+    } catch {
+        $errors.Add("unscoped search: $($_.Exception.Message)")
+    }
 
+    # 2) Also search each configured repository so custom/enterprise sources are covered
+    #    even when the default aggregate query is incomplete.
+    $sources = @(Get-WingetConfiguredSources)
+    foreach ($source in $sources) {
+        if ([string]::IsNullOrWhiteSpace($source)) { continue }
+
+        $searchArgs = @($trimmedQuery) + $countArgs + @('--source', $source)
         try {
             $result = Invoke-WingetCli -Command search -Arguments $searchArgs
             $parsed = Parse-WingetSearchResults -SearchOutput $result.Output -DefaultSource $source
             foreach ($pkg in $parsed) {
-                if ([string]::IsNullOrWhiteSpace($pkg.Source) -and $source) {
+                if ([string]::IsNullOrWhiteSpace($pkg.Source)) {
                     $pkg.Source = $source
                 }
                 Add-WingetPackageUnique -Target $packages -Package $pkg
@@ -641,24 +710,8 @@ function Search-WingetPackages {
         }
     }
 
-    # If per-source search found nothing, try one unscoped search across all repos
-    if ($packages.Count -eq 0) {
-        try {
-            $result = Invoke-WingetCli -Command search -Arguments (@($trimmedQuery) + $countArgs)
-            $parsed = Parse-WingetSearchResults -SearchOutput $result.Output
-            foreach ($pkg in $parsed) {
-                Add-WingetPackageUnique -Target $packages -Package $pkg
-            }
-
-            if ($result.ExitCode -ne 0 -and $packages.Count -eq 0) {
-                throw "Winget search failed with exit code $($result.ExitCode). Output: $($result.Output | Out-String)"
-            }
-        } catch {
-            if ($errors.Count -gt 0) {
-                throw "Winget search failed across repositories ($($errors -join '; ')). $($_.Exception.Message)"
-            }
-            throw
-        }
+    if ($packages.Count -eq 0 -and $errors.Count -gt 0) {
+        throw "Winget search failed for '$trimmedQuery' ($($errors -join '; '))."
     }
 
     $resolved = foreach ($pkg in $packages) {
