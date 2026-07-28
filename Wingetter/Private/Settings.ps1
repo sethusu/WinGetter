@@ -1,7 +1,58 @@
+function Get-WingetterDefaultBaseOutputPath {
+    # Default base is a folder named after the app (Wingetter), not a generic "Output" suffix.
+    $homeDir = if ($env:USERPROFILE) {
+        $env:USERPROFILE
+    } elseif ($env:HOME) {
+        $env:HOME
+    } else {
+        [Environment]::GetFolderPath('UserProfile')
+    }
+    if (-not $homeDir) {
+        $homeDir = [System.IO.Path]::GetTempPath()
+    }
+    return (Join-Path $homeDir 'Documents\Wingetter')
+}
+
+function Get-WingetterBaseOutputPath {
+    param(
+        [string]$Path,
+        [string]$PackageId
+    )
+
+    if (-not $Path) {
+        return Get-WingetterDefaultBaseOutputPath
+    }
+
+    if ($PackageId -and ((Split-Path -Path $Path -Leaf) -eq $PackageId)) {
+        $parent = Split-Path -Path $Path -Parent
+        if ($parent) {
+            return $parent
+        }
+    }
+
+    return $Path
+}
+
+function Get-WingetterAppOutputPath {
+    param(
+        [string]$BasePath,
+        [Parameter(Mandatory = $true)]
+        [string]$PackageId
+    )
+
+    $base = if ($BasePath) { $BasePath } else { Get-WingetterDefaultBaseOutputPath }
+    # If the caller already passed the app-named folder, keep it.
+    if ((Split-Path -Path $base -Leaf) -eq $PackageId) {
+        return $base
+    }
+
+    return (Join-Path $base $PackageId)
+}
+
 function Get-WingetterSettings {
     $settingsPath = Join-Path $env:APPDATA 'Wingetter\settings.json'
     $defaults = @{
-        OutputPath = Join-Path $env:USERPROFILE 'Documents\Wingetter Output'
+        OutputPath = Get-WingetterDefaultBaseOutputPath
         LastSearch = ''
         LastPackageId = ''
     }
@@ -17,6 +68,12 @@ function Get-WingetterSettings {
         } catch {
             Write-Warning "Could not read settings file. Using defaults."
         }
+    }
+
+    # Migrate the old portable default so existing installs land under Documents\Wingetter\{App}.
+    $legacyDefault = Join-Path (Split-Path (Get-WingetterDefaultBaseOutputPath) -Parent) 'Wingetter Output'
+    if ($defaults.OutputPath -eq $legacyDefault) {
+        $defaults.OutputPath = Get-WingetterDefaultBaseOutputPath
     }
 
     return [PSCustomObject]$defaults
@@ -38,7 +95,8 @@ function Save-WingetterSettings {
     $current = Get-WingetterSettings
 
     if ($PSBoundParameters.ContainsKey('OutputPath') -and $OutputPath) {
-        $current.OutputPath = $OutputPath
+        # Persist the base folder; per-app paths are derived as {base}\{PackageId}.
+        $current.OutputPath = Get-WingetterBaseOutputPath -Path $OutputPath -PackageId $LastPackageId
     }
     if ($PSBoundParameters.ContainsKey('LastSearch') -and $LastSearch) {
         $current.LastSearch = $LastSearch
