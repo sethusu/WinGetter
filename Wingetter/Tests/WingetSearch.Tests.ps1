@@ -298,3 +298,70 @@ Describe 'Search-WingetPackages' {
         $results[0].Source | Should -Be 'winget'
     }
 }
+
+Describe 'Get-WingetPackageDetails source fallback' {
+    It 'Retries without --source when winget reports SOURCE_NAME_DOES_NOT_EXIST' {
+        $details = InModuleScope Wingetter {
+            Mock Get-WingetConfiguredSources { return @('winget', 'msstore') }
+            Mock Invoke-WingetCli {
+                param($Command, $Arguments)
+                if ($Command -ne 'show') {
+                    return @{ Output = ''; ExitCode = 1; SupportsPackageAgreements = $false }
+                }
+
+                if ($Arguments -contains '--source') {
+                    return @{ Output = 'The source name does not exist.'; ExitCode = -1978335214; SupportsPackageAgreements = $false }
+                }
+
+                return @{
+                    Output = @(
+                        'Found VLC media player [VideoLAN.VLC]'
+                        'Version: 3.0.20'
+                        'Publisher: VideoLAN'
+                        'Homepage: https://www.videolan.org'
+                        'Source: winget'
+                    )
+                    ExitCode = 0
+                    SupportsPackageAgreements = $false
+                }
+            }
+
+            Get-WingetPackageDetails -PackageId 'VideoLAN.VLC' -Source 'msstore'
+        }
+
+        $details.PackageId | Should -Be 'VideoLAN.VLC'
+        $details.Version | Should -Be '3.0.20'
+        $details.Source | Should -Be 'winget'
+    }
+
+    It 'Skips unknown source names before calling winget show' {
+        InModuleScope Wingetter {
+            Mock Get-WingetConfiguredSources { return @('winget') }
+            Mock Invoke-WingetCli {
+                param($Command, $Arguments)
+                if ($Command -eq 'show' -and $Arguments -contains '--source') {
+                    throw 'should not pass unknown --source'
+                }
+                return @{
+                    Output = @(
+                        'Found Google Chrome [Google.Chrome]'
+                        'Version: 131.0.6778.86'
+                        'Publisher: Google'
+                        'Source: winget'
+                    )
+                    ExitCode = 0
+                    SupportsPackageAgreements = $false
+                }
+            }
+
+            $details = Get-WingetPackageDetails -PackageId 'Google.Chrome' -Source 'not-a-real-source'
+            $details.PackageId | Should -Be 'Google.Chrome'
+        }
+    }
+
+    It 'Describes SOURCE_NAME_DOES_NOT_EXIST exit code' {
+        InModuleScope Wingetter {
+            Get-WingetExitCodeDescription -ExitCode -1978335214 | Should -Be 'The source name does not exist'
+        }
+    }
+}

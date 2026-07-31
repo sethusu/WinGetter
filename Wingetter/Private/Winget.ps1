@@ -506,17 +506,23 @@ function Resolve-WingetTruncatedPackage {
     foreach ($candidate in $candidates) {
         try {
             $showArguments = @($candidate)
-            if ($Package.Source) {
-                $showArguments += @('--source', $Package.Source)
+            $resolvedSource = Resolve-WingetShowSourceArgument -Source $Package.Source
+            if ($resolvedSource) {
+                $showArguments += @('--source', $resolvedSource)
             }
             $result = Invoke-WingetCli -Command show -Arguments $showArguments
             $details = ConvertFrom-WingetShowFoundLine -ShowOutput $result.Output
+            if (-not $details -and $resolvedSource) {
+                # Source may be invalid on this machine; retry unscoped.
+                $result = Invoke-WingetCli -Command show -Arguments @($candidate)
+                $details = ConvertFrom-WingetShowFoundLine -ShowOutput $result.Output
+            }
             if ($details) {
                 return New-WingetPackageResult `
                     -Name $details.Name `
                     -Id $details.Id `
                     -Version $(if ($Package.Version -and $Package.Version -ne 'Unknown') { $Package.Version } else { $details.Version }) `
-                    -Source $(if ($Package.Source) { $Package.Source } else { $details.Source }) `
+                    -Source $(if ($resolvedSource) { $resolvedSource } elseif ($details.Source) { $details.Source } else { $Package.Source }) `
                     -TruncatedId:$false
             }
         } catch {
@@ -741,8 +747,72 @@ function Search-WingetPackages {
     return Sort-WingetPackageMatches -Query $trimmedQuery -Packages @($resolved)
 }
 
-function Get-WingetPackageDetails {
-    [CmdletBinding()]
+# winget HRESULT 0x8A150012 -- source name does not exist on this machine.
+$script:WingetExitSourceNameDoesNotExist = -1978335214
+
+function Get-WingetExitCodeDescription {
+    param([int]$ExitCode)
+
+    switch ($ExitCode) {
+        -1978335231 { return 'Internal Error' }
+        -1978335230 { return 'Invalid command line arguments' }
+        -1978335229 { return 'Executing command failed' }
+        -1978335216 { return 'None of the installers are applicable for the current system' }
+        -1978335214 { return 'The source name does not exist' }
+        -1978335212 { return 'No packages found' }
+        -1978335211 { return 'No sources are configured' }
+        -1978335210 { return 'Multiple packages found matching the criteria' }
+        -1978335209 { return 'No manifest found matching the criteria' }
+        default { return $null }
+    }
+}
+
+function Test-WingetSourceArgument {
+    param(
+        [AllowEmptyString()]
+        [string]$Source
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Source)) {
+        return $false
+    }
+
+    $trimmed = $Source.Trim()
+    if ($trimmed.Length -gt 64 -or $trimmed -match '[:\s]') {
+        return $false
+    }
+
+    if ($trimmed -match '^(?i)(Moniker|Tag|ProductCode|Version|Match|Source|Name|Id|Unknown)$') {
+        return $false
+    }
+
+    return $true
+}
+
+function Resolve-WingetShowSourceArgument {
+    param(
+        [AllowEmptyString()]
+        [string]$Source
+    )
+
+    if (-not (Test-WingetSourceArgument -Source $Source)) {
+        return ''
+    }
+
+    $trimmed = $Source.Trim()
+    try {
+        $configured = @(Get-WingetConfiguredSources)
+        if ($configured.Count -gt 0 -and ($configured -notcontains $trimmed)) {
+            return ''
+        }
+    } catch {
+        # If source listing fails, still try the caller-provided name once.
+    }
+
+    return $trimmed
+}
+
+function Invoke-WingetShowForPackageDetails {
     param(
         [Parameter(Mandatory = $true)]
         [string]$PackageId,
@@ -758,12 +828,56 @@ function Get-WingetPackageDetails {
         $showArguments += @('--source', $Source)
     }
 
-    $result = Invoke-WingetCli -Command show -Arguments $showArguments
-    $appInfo = $result.Output
-    $hasAppInfo = $appInfo | Select-String -Pattern 'Found.*\[|Version:\s+|Publisher:\s+' -Quiet
+    return Invoke-WingetCli -Command show -Arguments $showArguments
+}
+
+function Get-WingetPackageDetails {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$PackageId,
+        [string]$Version,
+        [string]$Source
+    )
+
+    $requestedSource = Resolve-WingetShowSourceArgument -Source $Source
+    $attemptSources = [System.Collections.Generic.List[string]]::new()
+    if ($requestedSource) {
+        $attemptSources.Add($requestedSource)
+    }
+    # Always fall back to an unscoped show. Search may attribute a source that is
+    # missing, renamed, or blocked on the current machine (exit -1978335214).
+    if (-not ($attemptSources -contains '')) {
+        $attemptSources.Add('')
+    }
+
+    $result = $null
+    $appInfo = $null
+    $hasAppInfo = $false
+    $usedSource = ''
+
+    foreach ($attemptSource in $attemptSources) {
+        $result = Invoke-WingetShowForPackageDetails -PackageId $PackageId -Version $Version -Source $attemptSource
+        $appInfo = $result.Output
+        $hasAppInfo = [bool]($appInfo | Select-String -Pattern 'Found.*\[|Version:\s+|Publisher:\s+' -Quiet)
+        $usedSource = $attemptSource
+
+        if ($result.ExitCode -eq 0 -or $hasAppInfo) {
+            break
+        }
+
+        # Retry without --source when winget rejects the source name, or for any
+        # scoped failure (unscoped retry is the final attempt in the list).
+        if ($attemptSource) {
+            continue
+        }
+    }
 
     if ($result.ExitCode -ne 0 -and -not $hasAppInfo) {
-        throw "Failed to get app information from Winget (exit code: $($result.ExitCode))."
+        $meaning = Get-WingetExitCodeDescription -ExitCode ([int]$result.ExitCode)
+        $detail = if ($meaning) { " -- $meaning" } else { '' }
+        $sourceNote = if ($Source) { " (requested source '$Source')" } else { '' }
+        throw "Failed to get app information from Winget (exit code: $($result.ExitCode))$detail$sourceNote."
     }
 
     $lines = ConvertTo-WingetOutputLines -Output $appInfo
@@ -774,7 +888,13 @@ function Get-WingetPackageDetails {
     $foundVersion = if ($text -match 'Version:\s+(.+)') { ($text | Select-String -Pattern 'Version:\s+(.+)' | Select-Object -First 1).Matches.Groups[1].Value.Trim() } else { $Version }
     $publisher = if ($text -match 'Publisher:\s+(.+)') { ($text | Select-String -Pattern 'Publisher:\s+(.+)' | Select-Object -First 1).Matches.Groups[1].Value.Trim() } else { 'Unknown' }
     $homepage = if ($text -match 'Homepage:\s+(.+)') { ($text | Select-String -Pattern 'Homepage:\s+(.+)' | Select-Object -First 1).Matches.Groups[1].Value.Trim() } else { '' }
-    $packageSource = if ($text -match 'Source:\s+(.+)') { ($text | Select-String -Pattern 'Source:\s+(.+)' | Select-Object -First 1).Matches.Groups[1].Value.Trim() } else { $Source }
+    $packageSource = if ($text -match 'Source:\s+(.+)') {
+        ($text | Select-String -Pattern 'Source:\s+(.+)' | Select-Object -First 1).Matches.Groups[1].Value.Trim()
+    } elseif ($usedSource) {
+        $usedSource
+    } else {
+        $Source
+    }
 
     $description = 'No description available'
     $descriptionLine = $lines | Where-Object { $_ -match '^Description:\s+' } | Select-Object -First 1
