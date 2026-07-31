@@ -87,6 +87,11 @@ function Write-WingetterLaunchLog {
         [string]$Message
     )
 
+    $logDirectory = Split-Path -Parent -Path $LogPath
+    if ($logDirectory -and -not (Test-Path -LiteralPath $logDirectory)) {
+        New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
+    }
+
     $line = '{0:yyyy-MM-dd HH:mm:ss.fff}  {1}' -f (Get-Date), $Message
     Add-Content -LiteralPath $LogPath -Value $line -Encoding UTF8
 }
@@ -122,8 +127,8 @@ function Write-WingetterChildLog([string]`$Message) {
 }
 try {
     Write-WingetterChildLog 'Starting GUI'
-    Write-WingetterChildLog ("AppRoot=$AppRoot")
-    Write-WingetterChildLog ("GuiScript=$GuiScript")
+    Write-WingetterChildLog 'AppRoot=$appRootLiteral'
+    Write-WingetterChildLog 'GuiScript=$guiScriptLiteral'
     Set-Location -LiteralPath '$appRootLiteral'
     & '$guiScriptLiteral'
     Write-WingetterChildLog 'GUI exited normally'
@@ -149,36 +154,58 @@ try {
     Write-WingetterLaunchLog -LogPath $LogPath -Message "powershell=$windowsPowerShell"
     Write-WingetterLaunchLog -LogPath $LogPath -Message "appRoot=$AppRoot"
     Write-WingetterLaunchLog -LogPath $LogPath -Message "guiScript=$GuiScript"
-    Write-WingetterLaunchLog -LogPath $LogPath -Message 'Starting child via -EncodedCommand'
 
-    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
-    $startInfo.FileName = $windowsPowerShell
-    $startInfo.Arguments = "-NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -EncodedCommand $encodedCommand"
-    $startInfo.WorkingDirectory = $AppRoot
-    $startInfo.UseShellExecute = $false
-    $startInfo.CreateNoWindow = $true
-
-    $process = New-Object System.Diagnostics.Process
-    $process.StartInfo = $startInfo
-    if (-not $process.Start()) {
-        throw 'Failed to start Windows PowerShell for the Wingetter GUI.'
-    }
-
-    Write-WingetterLaunchLog -LogPath $LogPath -Message ("childPid={0}" -f $process.Id)
-
-    # If the child dies immediately, surface the failure instead of a silent flash.
-    if ($process.WaitForExit(4000)) {
-        $exitCode = $process.ExitCode
-        Write-WingetterLaunchLog -LogPath $LogPath -Message ("childExitedEarly exitCode={0}" -f $exitCode)
-        $tail = ''
-        if (Test-Path -LiteralPath $LogPath) {
-            $tail = (Get-Content -LiteralPath $LogPath -Tail 20) -join "`n"
+    $attempts = @(
+        @{
+            Name = 'hidden-encoded'
+            Arguments = "-NoProfile -ExecutionPolicy Bypass -STA -WindowStyle Hidden -EncodedCommand $encodedCommand"
+            CreateNoWindow = $true
+            WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden
+        },
+        @{
+            Name = 'normal-encoded-fallback'
+            Arguments = "-NoProfile -ExecutionPolicy Bypass -STA -EncodedCommand $encodedCommand"
+            CreateNoWindow = $false
+            WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Normal
         }
-        throw "Wingetter GUI process exited immediately (exit code $exitCode).`n`nLog: $LogPath`n`n$tail"
+    )
+
+    foreach ($attempt in $attempts) {
+        Write-WingetterLaunchLog -LogPath $LogPath -Message ("Starting child attempt={0}" -f $attempt.Name)
+
+        $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $startInfo.FileName = $windowsPowerShell
+        $startInfo.Arguments = $attempt.Arguments
+        $startInfo.WorkingDirectory = $AppRoot
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = [bool]$attempt.CreateNoWindow
+        $startInfo.WindowStyle = $attempt.WindowStyle
+
+        $process = New-Object System.Diagnostics.Process
+        $process.StartInfo = $startInfo
+        if (-not $process.Start()) {
+            Write-WingetterLaunchLog -LogPath $LogPath -Message ("childStartFailed attempt={0}" -f $attempt.Name)
+            continue
+        }
+
+        Write-WingetterLaunchLog -LogPath $LogPath -Message ("childPid={0} attempt={1}" -f $process.Id, $attempt.Name)
+
+        # If the child dies immediately, try one fallback before giving up.
+        if ($process.WaitForExit(4000)) {
+            $exitCode = $process.ExitCode
+            Write-WingetterLaunchLog -LogPath $LogPath -Message ("childExitedEarly exitCode={0} attempt={1}" -f $exitCode, $attempt.Name)
+            continue
+        }
+
+        Write-WingetterLaunchLog -LogPath $LogPath -Message ("childRunning attempt={0} — launch looks healthy" -f $attempt.Name)
+        return $process
     }
 
-    Write-WingetterLaunchLog -LogPath $LogPath -Message 'child still running after 4s — launch looks healthy'
-    return $process
+    $tail = ''
+    if (Test-Path -LiteralPath $LogPath) {
+        $tail = (Get-Content -LiteralPath $LogPath -Tail 30) -join "`n"
+    }
+    throw "Wingetter GUI process exited immediately after all launch attempts.`n`nLog: $LogPath`n`n$tail"
 }
 
 try {
@@ -188,17 +215,31 @@ try {
     $appRoot = Get-WingetterAppRoot -Invocation $scriptInvocation
     $guiScript = Join-Path $appRoot 'Gui\Start-WingetterGui.ps1'
     $moduleManifest = Join-Path $appRoot 'Wingetter.psd1'
+    $mainWindowXaml = Join-Path $appRoot 'Gui\Wingetter.MainWindow.xaml'
+    $searchDialogXaml = Join-Path $appRoot 'Gui\Wingetter.SearchDialog.xaml'
+    $iconDialogXaml = Join-Path $appRoot 'Gui\Wingetter.IconPickerDialog.xaml'
     $isCompiled = $scriptInvocation.MyCommand.CommandType -ne 'ExternalScript'
 
     Write-WingetterLaunchLog -LogPath $logPath -Message ("isCompiled={0}" -f $isCompiled)
     Write-WingetterLaunchLog -LogPath $logPath -Message ("appRoot={0}" -f $appRoot)
 
-    if (-not (Test-Path -LiteralPath $guiScript)) {
-        throw "Could not find Gui\Start-WingetterGui.ps1 next to the launcher.`nLooked in: $appRoot`n`nKeep Wingetter.exe in the same folder as Gui\, Private\, and Wingetter.psd1."
-    }
+    $requiredRuntimeFiles = @(
+        @{ Path = $guiScript; Name = 'Gui\Start-WingetterGui.ps1' }
+        @{ Path = $moduleManifest; Name = 'Wingetter.psd1' }
+        @{ Path = $mainWindowXaml; Name = 'Gui\Wingetter.MainWindow.xaml' }
+        @{ Path = $searchDialogXaml; Name = 'Gui\Wingetter.SearchDialog.xaml' }
+        @{ Path = $iconDialogXaml; Name = 'Gui\Wingetter.IconPickerDialog.xaml' }
+    )
 
-    if (-not (Test-Path -LiteralPath $moduleManifest)) {
-        throw "Could not find Wingetter.psd1 next to the launcher.`nLooked in: $appRoot"
+    $missing = @(
+        $requiredRuntimeFiles |
+            Where-Object { -not (Test-Path -LiteralPath $_.Path) } |
+            ForEach-Object { $_.Name }
+    )
+
+    if ($missing.Count -gt 0) {
+        $missingText = ($missing -join ', ')
+        throw "Wingetter runtime files are missing next to the launcher: $missingText.`nLooked in: $appRoot`n`nKeep Wingetter.exe in the same folder as Gui\, Private\, and Wingetter.psd1."
     }
 
     Set-Location -LiteralPath $appRoot
