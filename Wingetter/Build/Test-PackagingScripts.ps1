@@ -79,6 +79,63 @@ if ($cmd -notmatch 'ExecutionPolicy Bypass') {
     $failures += 'Start-Wingetter.cmd should use ExecutionPolicy Bypass'
 }
 
+# PowerShell 5.1 reads BOM-less scripts using the ANSI code page. UTF-8 bytes such as
+# 0x92/0x94 then become curly quotes and terminate strings early (breaking \s{2,} regexes).
+$utf8Bom = [byte[]](0xEF, 0xBB, 0xBF)
+$privateDir = Join-Path $root 'Private'
+foreach ($scriptPath in Get-ChildItem -LiteralPath $privateDir -Filter '*.ps1' -File) {
+    $bytes = [System.IO.File]::ReadAllBytes($scriptPath.FullName)
+    $hasBom = ($bytes.Length -ge 3 -and $bytes[0] -eq $utf8Bom[0] -and $bytes[1] -eq $utf8Bom[1] -and $bytes[2] -eq $utf8Bom[2])
+    if ($hasBom) {
+        continue
+    }
+
+    $offset = 0
+    while ($offset -lt $bytes.Length) {
+        $b = $bytes[$offset]
+        if ($b -lt 0x80) {
+            $offset++
+            continue
+        }
+
+        if ($b -ge 0xF0) { $seqLen = 4 }
+        elseif ($b -ge 0xE0) { $seqLen = 3 }
+        elseif ($b -ge 0xC0) { $seqLen = 2 }
+        else {
+            $failures += "$($scriptPath.Name) contains invalid UTF-8 continuation at offset $offset"
+            break
+        }
+
+        if (($offset + $seqLen) -gt $bytes.Length) {
+            $failures += "$($scriptPath.Name) contains truncated UTF-8 sequence at offset $offset"
+            break
+        }
+
+        $sequence = $bytes[$offset..($offset + $seqLen - 1)]
+        foreach ($quoteRisk in 0x91, 0x92, 0x93, 0x94) {
+            if ($sequence -contains [byte]$quoteRisk) {
+                $failures += "$($scriptPath.Name) is UTF-8 without BOM and contains byte 0x$([Convert]::ToString($quoteRisk, 16)) inside a multi-byte character. Windows PowerShell 5.1 may misread that as a curly quote and break parsing. Use ASCII or save with a UTF-8 BOM."
+                break
+            }
+        }
+
+        # Also flag any non-ASCII in BOM-less Private scripts -- keep the distributed module ASCII-safe.
+        $failures += "$($scriptPath.Name) contains non-ASCII bytes without a UTF-8 BOM (offset $offset). Windows PowerShell 5.1 may mis-parse the file; use ASCII or add a UTF-8 BOM."
+        break
+    }
+}
+
+$wingetScript = Get-Content -LiteralPath (Join-Path $privateDir 'Winget.ps1') -Raw
+foreach ($needle in @(
+        'WingetProgressLinePattern'
+        'Test-WingetTruncatedId'
+        'WingetEllipsisChar'
+    )) {
+    if ($wingetScript -notmatch [regex]::Escape($needle)) {
+        $failures += "Private\Winget.ps1 missing expected content: $needle"
+    }
+}
+
 if ($failures.Count -gt 0) {
     Write-Host 'Packaging checks FAILED:' -ForegroundColor Red
     $failures | ForEach-Object { Write-Host "  - $_" -ForegroundColor Red }

@@ -205,6 +205,12 @@ To diagnose on Windows without rebuilding:
 
 ## Troubleshooting
 
+### Wingetter.exe flashes or shows regex parse errors
+
+If the GUI fails with errors in `Private\Winget.ps1` mentioning `\s{2,}` / `Missing expression after ','`, you are likely running an older build that embeds UTF-8 glyphs in a BOM-less script. Rebuild from source (`.\Build\Build-WingetterExe.ps1`) — version **2.2.2+** keeps those scripts ASCII-safe for Windows PowerShell 5.1.
+
+Startup details are always written to `%TEMP%\Wingetter-launch.log`.
+
 ### Prerequisites check fails in GUI
 
 - Install Winget: `winget --version`

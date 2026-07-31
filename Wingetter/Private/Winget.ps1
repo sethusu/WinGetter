@@ -1,3 +1,22 @@
+# PowerShell 5.1 reads BOM-less scripts as the system ANSI code page. Keep this file
+# ASCII-safe (or UTF-8 with BOM) so glyphs like U+2592 (UTF-8 ... 0x92) are not
+# misread as curly quotes that terminate strings and break regex quantifiers ({2,}).
+$script:WingetEllipsisChar = [char]0x2026
+$script:WingetProgressLinePattern = '[{0}{1}]|\bKB\b|\bMB\b|%' -f [char]0x2588, [char]0x2592
+
+function Test-WingetTruncatedId {
+    param(
+        [AllowEmptyString()]
+        [string]$Id
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Id)) {
+        return $false
+    }
+
+    return ($Id.IndexOf($script:WingetEllipsisChar) -ge 0) -or ($Id -match '\.\.\.$')
+}
+
 function ConvertTo-WingetOutputLines {
     param($Output)
 
@@ -148,8 +167,9 @@ function Test-WingetSearchRow {
         return $false
     }
 
-    # Accept dotted community IDs and undotted MS Store product IDs (e.g. XP89DCGQ3K6VLD)
-    if ($Id -notmatch '^[A-Za-z0-9][A-Za-z0-9._…-]*$' -and $Id -notmatch '…|\.\.\.$') {
+    # Accept dotted community IDs and undotted MS Store product IDs (e.g. XP89DCGQ3K6VLD),
+    # including truncated winget table IDs that contain an ellipsis glyph.
+    if ($Id -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$' -and -not (Test-WingetTruncatedId -Id $Id)) {
         return $false
     }
 
@@ -272,7 +292,7 @@ function Parse-WingetSearchResults {
             continue
         }
 
-        if ($line -match '█|▒|\bKB\b|\bMB\b|%' -or ($line.Length -lt 8 -and $line.Trim() -ne '')) {
+        if ($line -match $script:WingetProgressLinePattern -or ($line.Length -lt 8 -and $line.Trim() -ne '')) {
             continue
         }
 
@@ -316,7 +336,7 @@ function Parse-WingetSearchResults {
             continue
         }
 
-        $truncatedId = [bool]($id -match '…|\.\.\.$')
+        $truncatedId = Test-WingetTruncatedId -Id $id
         $packages.Add((New-WingetPackageResult -Name $name -Id $id -Version $version -Source $source -TruncatedId:$truncatedId))
     }
 
@@ -592,7 +612,7 @@ function Parse-WingetSearchResultsLoose {
     foreach ($line in $Lines) {
         if ([string]::IsNullOrWhiteSpace($line)) { continue }
         if ($line -match '(?i)No package found matching input criteria') { return @() }
-        if ($line -match '█|▒|\bKB\b|\bMB\b|%' ) { continue }
+        if ($line -match $script:WingetProgressLinePattern) { continue }
         if ($line -match '^\s*Name\s+Id\s+Version') { continue }
         if ($line -match '^-+$') { continue }
 
@@ -604,7 +624,7 @@ function Parse-WingetSearchResultsLoose {
             if ([string]::IsNullOrWhiteSpace($name)) { $name = $id }
             $source = Get-WingetSourceFromSearchLine -Line $line -DefaultSource $DefaultSource
             if (Test-WingetSearchRow -Name $name -Id $id -Version $version) {
-                $packages.Add((New-WingetPackageResult -Name $name -Id $id -Version $version -Source $source -TruncatedId:($id -match '…|\.\.\.$')))
+                $packages.Add((New-WingetPackageResult -Name $name -Id $id -Version $version -Source $source -TruncatedId:(Test-WingetTruncatedId -Id $id)))
             }
             continue
         }
@@ -670,7 +690,7 @@ function Search-WingetPackages {
         $countArgs = @('--count', "$MaxResultsPerSource")
     }
 
-    # 1) Unscoped search first — same as typing `winget search VLC` in a terminal.
+    # 1) Unscoped search first -- same as typing `winget search VLC` in a terminal.
     #    Winget substring-matches name, id, moniker, tags, and commands across all sources.
     try {
         $result = Invoke-WingetCli -Command search -Arguments (@($trimmedQuery) + $countArgs)
