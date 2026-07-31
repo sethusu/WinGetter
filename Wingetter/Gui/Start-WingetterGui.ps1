@@ -18,6 +18,13 @@ Add-Type -AssemblyName PresentationCore
 Add-Type -AssemblyName WindowsBase
 Add-Type -AssemblyName System.Windows.Forms
 
+# WinForms dialogs (folder/file pickers) render more reliably with visual styles enabled.
+try {
+    [System.Windows.Forms.Application]::EnableVisualStyles()
+} catch {
+    # Non-fatal — dialogs can still open without visual styles.
+}
+
 $moduleRoot = Split-Path -Parent $PSScriptRoot
 $modulePath = Join-Path $moduleRoot 'Wingetter.psd1'
 Import-Module $modulePath -Force
@@ -46,27 +53,108 @@ function Read-XamlWindow {
     return [Windows.Markup.XamlReader]::Load($reader)
 }
 
+function Get-WinFormsOwnerWindow {
+    param($OwnerWindow)
+
+    if (-not $OwnerWindow) {
+        return $null
+    }
+
+    try {
+        $helper = New-Object System.Windows.Interop.WindowInteropHelper($OwnerWindow)
+        # Ensure the WPF HWND exists before parenting WinForms dialogs.
+        $null = $helper.EnsureHandle()
+        if ($helper.Handle -eq [IntPtr]::Zero) {
+            return $null
+        }
+
+        $owner = New-Object System.Windows.Forms.NativeWindow
+        $owner.AssignHandle($helper.Handle)
+        return $owner
+    } catch {
+        return $null
+    }
+}
+
 function Show-FolderBrowser {
-    param([string]$Description, [string]$SelectedPath)
+    param(
+        [string]$Description,
+        [string]$SelectedPath,
+        $OwnerWindow = $null
+    )
+
+    # WinForms FolderBrowserDialog defaults RootFolder to Desktop. When SelectedPath
+    # points at another drive (common for packaging folders like D:\...), ShowDialog
+    # can throw / tear down the WPF host. Root at MyComputer so any path is valid.
     $dialog = New-Object System.Windows.Forms.FolderBrowserDialog
     $dialog.Description = $Description
-    if ($SelectedPath -and (Test-Path $SelectedPath)) {
-        $dialog.SelectedPath = $SelectedPath
+    $dialog.ShowNewFolderButton = $true
+    $dialog.RootFolder = [Environment+SpecialFolder]::MyComputer
+
+    if ($SelectedPath) {
+        try {
+            $candidate = [System.IO.Path]::GetFullPath($SelectedPath)
+            if (Test-Path -LiteralPath $candidate) {
+                $dialog.SelectedPath = $candidate
+            }
+        } catch {
+            # Ignore unusable initial paths; dialog still opens at My Computer.
+        }
     }
-    if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-        return $dialog.SelectedPath
+
+    $owner = Get-WinFormsOwnerWindow -OwnerWindow $OwnerWindow
+    $result = [System.Windows.Forms.DialogResult]::Cancel
+    $chosenPath = $null
+    try {
+        if ($owner) {
+            $result = $dialog.ShowDialog($owner)
+        } else {
+            $result = $dialog.ShowDialog()
+        }
+        if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
+            $chosenPath = $dialog.SelectedPath
+        }
+    } finally {
+        if ($owner) {
+            try { $owner.ReleaseHandle() } catch { }
+        }
+        $dialog.Dispose()
     }
-    return $null
+
+    return $chosenPath
 }
 
 function Show-OpenFileDialog {
-    param([string]$Filter = 'PNG images (*.png)|*.png|All files (*.*)|*.*')
+    param(
+        [string]$Filter = 'PNG images (*.png)|*.png|All files (*.*)|*.*',
+        $OwnerWindow = $null
+    )
+
     $dialog = New-Object System.Windows.Forms.OpenFileDialog
     $dialog.Filter = $Filter
-    if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {
-        return $dialog.FileName
+    $dialog.CheckFileExists = $true
+    $dialog.Multiselect = $false
+
+    $owner = Get-WinFormsOwnerWindow -OwnerWindow $OwnerWindow
+    $result = [System.Windows.Forms.DialogResult]::Cancel
+    $chosenPath = $null
+    try {
+        if ($owner) {
+            $result = $dialog.ShowDialog($owner)
+        } else {
+            $result = $dialog.ShowDialog()
+        }
+        if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
+            $chosenPath = $dialog.FileName
+        }
+    } finally {
+        if ($owner) {
+            try { $owner.ReleaseHandle() } catch { }
+        }
+        $dialog.Dispose()
     }
-    return $null
+
+    return $chosenPath
 }
 
 function Set-IconPreview {
@@ -954,20 +1042,56 @@ $searchBox.Add_KeyDown({
 })
 
 $browseOutputButton.Add_Click({
-    $path = Show-FolderBrowser -Description 'Select base output folder (each app gets its own subfolder)' -SelectedPath $script:baseOutputPath
-    if ($path) {
-        $script:baseOutputPath = $path
-        Update-OutputPathForSelectedApp
-        Save-WingetterSettings -OutputPath $script:baseOutputPath -LastPackageId $(if ($script:selectedPackage) { $script:selectedPackage.Id } else { $null })
+    try {
+        $initialPath = $script:baseOutputPath
+        if (-not $initialPath -and $outputPathBox.Text) {
+            $initialPath = $outputPathBox.Text.Trim()
+        }
+
+        $path = Show-FolderBrowser `
+            -Description 'Select base output folder (each app gets its own subfolder)' `
+            -SelectedPath $initialPath `
+            -OwnerWindow $window
+
+        if ($path) {
+            $script:baseOutputPath = $path
+            Update-OutputPathForSelectedApp
+            $lastId = $null
+            if ($script:selectedPackage -and $script:selectedPackage.Id) {
+                $lastId = $script:selectedPackage.Id
+            }
+            Save-WingetterSettings -OutputPath $script:baseOutputPath -LastPackageId $lastId
+            Add-LogLine -LogControl $logText -Message "Output base folder set to: $path"
+        }
+    } catch {
+        Add-LogLine -LogControl $logText -Message "Folder browser failed: $($_.Exception.Message)"
+        [System.Windows.MessageBox]::Show(
+            $window,
+            "Could not open the folder browser.`n`n$($_.Exception.Message)",
+            'Wingetter',
+            'OK',
+            'Error'
+        ) | Out-Null
     }
 })
 
 $browseIconButton.Add_Click({
-    $path = Show-OpenFileDialog
-    if ($path) {
-        $script:customIconPath = $path
-        Set-IconPreview -ImageControl $iconPreview -StatusControl $iconStatus -ImagePath $path
-        Add-LogLine -LogControl $logText -Message "Custom icon selected: $path"
+    try {
+        $path = Show-OpenFileDialog -OwnerWindow $window
+        if ($path) {
+            $script:customIconPath = $path
+            Set-IconPreview -ImageControl $iconPreview -StatusControl $iconStatus -ImagePath $path
+            Add-LogLine -LogControl $logText -Message "Custom icon selected: $path"
+        }
+    } catch {
+        Add-LogLine -LogControl $logText -Message "Icon browser failed: $($_.Exception.Message)"
+        [System.Windows.MessageBox]::Show(
+            $window,
+            "Could not open the file browser.`n`n$($_.Exception.Message)",
+            'Wingetter',
+            'OK',
+            'Error'
+        ) | Out-Null
     }
 })
 

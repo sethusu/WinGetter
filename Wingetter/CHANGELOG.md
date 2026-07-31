@@ -1,5 +1,12 @@
 # Wingetter Changelog
 
+## Version 2.2.1 - 2026-07-31
+
+### Folder browser crash fix
+- Fixed GUI crash when clicking **Browse...** for the output location, especially when the saved/default path is on a non-Desktop drive (e.g. `D:\Intoon In Progress\...`)
+- Folder picker now roots at **My Computer** (any drive), parents to the main WPF window, and disposes cleanly
+- Browse failures no longer tear down the whole GUI (`try/catch` + error dialog)
+
 ## Version 2.2.0 - 2026-07-28
 
 ### Double-click executable (ps2exe)
