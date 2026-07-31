@@ -755,18 +755,28 @@ function Start-PackageIconPreview {
 
     $script:iconPreviewJob = Start-Job -ArgumentList $modulePath, $Package, $previewPath -ScriptBlock {
         param($ModulePath, $SelectedPackage, $OutputPath)
-        Import-Module $ModulePath -Force
-        $version = if ($SelectedPackage.Version -and $SelectedPackage.Version -ne 'Unknown') { $SelectedPackage.Version } else { $null }
-        $detailParams = @{ PackageId = $SelectedPackage.Id }
-        if ($version) { $detailParams.Version = $version }
-        if ($SelectedPackage.Source) { $detailParams.Source = $SelectedPackage.Source }
-        $details = Get-WingetPackageDetails @detailParams
-        $homepage = if ($details.Homepage) { $details.Homepage } else { '' }
-        Resolve-PackageIcon -PackageId $SelectedPackage.Id -DisplayName $SelectedPackage.Name `
-            -Publisher $details.Publisher -Homepage $homepage -Version $details.Version `
-            -OutputPath $OutputPath | Out-Null
-        if (Test-Path $OutputPath) { return $OutputPath }
-        return $null
+        $ErrorActionPreference = 'Stop'
+        try {
+            Import-Module $ModulePath -Force
+            $version = if ($SelectedPackage.Version -and $SelectedPackage.Version -ne 'Unknown') { $SelectedPackage.Version } else { $null }
+            $detailParams = @{ PackageId = $SelectedPackage.Id }
+            if ($version) { $detailParams.Version = $version }
+            if ($SelectedPackage.Source) { $detailParams.Source = $SelectedPackage.Source }
+            $details = Get-WingetPackageDetails @detailParams
+            $homepage = if ($details.Homepage) { $details.Homepage } else { '' }
+            Resolve-PackageIcon -PackageId $SelectedPackage.Id -DisplayName $SelectedPackage.Name `
+                -Publisher $details.Publisher -Homepage $homepage -Version $details.Version `
+                -OutputPath $OutputPath | Out-Null
+            if (Test-Path $OutputPath) { return $OutputPath }
+            return $null
+        } catch {
+            # Preview is best-effort -- never fail the job with a terminating error that
+            # would tear down the WPF ShowDialog message pump in the parent process.
+            return [PSCustomObject]@{
+                PreviewFailed = $true
+                Message = $_.Exception.Message
+            }
+        }
     }
 
     if ($script:iconPreviewTimer) {
@@ -783,14 +793,37 @@ function Start-PackageIconPreview {
         $script:iconPreviewJob = $null
 
         try {
-            $previewFile = Receive-Job -Job $job
-            if ($previewFile -and (Test-Path $previewFile)) {
+            $previewResult = $null
+            if ($job.State -eq 'Failed') {
+                $err = Receive-Job -Job $job -ErrorAction SilentlyContinue | Out-String
+                $message = if ($err) { $err.Trim() } else { 'background job failed' }
+                $iconStatus.Text = 'Icon preview unavailable. It will be resolved again during packaging.'
+                Add-LogLine -LogControl $logText -Message "Icon preview failed for $($script:selectedPackage.Id): $message"
+                return
+            }
+
+            $previewResult = Receive-Job -Job $job -ErrorAction SilentlyContinue
+            if ($previewResult -is [array] -and $previewResult.Count -eq 1) {
+                $previewResult = $previewResult[0]
+            }
+
+            if ($previewResult -and ($previewResult.PSObject.Properties.Name -contains 'PreviewFailed') -and $previewResult.PreviewFailed) {
+                $iconStatus.Text = 'Icon preview unavailable. It will be resolved again during packaging.'
+                Add-LogLine -LogControl $logText -Message "Icon preview failed for $($script:selectedPackage.Id): $($previewResult.Message)"
+                return
+            }
+
+            $previewFile = $previewResult
+            if ($previewFile -and (Test-Path -LiteralPath "$previewFile")) {
                 Set-IconPreview -ImageControl $iconPreview -StatusControl $iconStatus -ImagePath $previewFile
                 Add-LogLine -LogControl $logText -Message "Icon preview loaded for $($script:selectedPackage.Id)."
             } else {
                 $iconStatus.Text = 'Icon preview unavailable. It will be resolved again during packaging.'
                 Add-LogLine -LogControl $logText -Message "Icon preview unavailable for $($script:selectedPackage.Id)."
             }
+        } catch {
+            $iconStatus.Text = 'Icon preview unavailable. It will be resolved again during packaging.'
+            Add-LogLine -LogControl $logText -Message "Icon preview failed: $($_.Exception.Message)"
         } finally {
             Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
         }

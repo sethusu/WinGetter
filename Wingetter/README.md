@@ -205,6 +205,10 @@ To diagnose on Windows without rebuilding:
 
 ## Troubleshooting
 
+### Wingetter.exe crashes after selecting an app
+
+If choosing a search result closes the GUI with `Failed to get app information from Winget (exit code: -1978335214)`, the selected package's source name is not available on that machine. Version **2.2.3+** retries `winget show` without `--source` and keeps the window open if icon preview fails.
+
 ### Wingetter.exe flashes or shows regex parse errors
 
 If the GUI fails with errors in `Private\Winget.ps1` mentioning `\s{2,}` / `Missing expression after ','`, you are likely running an older build that embeds UTF-8 glyphs in a BOM-less script. Rebuild from source (`.\Build\Build-WingetterExe.ps1`) — version **2.2.2+** keeps those scripts ASCII-safe for Windows PowerShell 5.1.

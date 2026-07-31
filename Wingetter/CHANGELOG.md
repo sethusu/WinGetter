@@ -1,5 +1,13 @@
 # Wingetter Changelog
 
+## Version 2.2.3 - 2026-07-31
+
+### App selection crash (invalid winget source)
+- Fixed GUI crash after choosing a search result when icon preview called `winget show --source <name>`
+- Exit code `-1978335214` (`APPINSTALLER_CLI_ERROR_SOURCE_NAME_DOES_NOT_EXIST`) now triggers an unscoped `winget show` retry instead of failing hard
+- Unknown/invalid source names are filtered against `winget source list` before being passed through
+- Icon preview failures are non-fatal and no longer tear down the main WPF window (`ShowDialog`)
+
 ## Version 2.2.2 - 2026-07-31
 
 ### Wingetter.exe module parse crash (PowerShell 5.1 encoding)
