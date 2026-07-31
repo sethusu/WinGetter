@@ -1,5 +1,13 @@
 # Wingetter Changelog
 
+## Version 2.2.2 - 2026-07-31
+
+### Wingetter.exe module parse crash (PowerShell 5.1 encoding)
+- Fixed GUI start failure when `Import-Module` dotsourced `Private\Winget.ps1`
+- Root cause: UTF-8 characters (`▒`, `…`, `—`) in a BOM-less `.ps1` were misread under Windows-1252 as curly quotes, which terminated strings early and made regex quantifiers like `\s{2,}` look like script blocks
+- Replaced those glyphs with ASCII-safe constructs (`[char]0x2588` / `[char]0x2592` / `[char]0x2026`)
+- Added packaging checks that fail if Private scripts contain non-ASCII without a UTF-8 BOM
+
 ## Version 2.2.1 - 2026-07-31
 
 ### Folder browser crash fix
