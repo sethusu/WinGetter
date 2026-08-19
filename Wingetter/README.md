@@ -11,6 +11,7 @@ Wingetter automates the creation of Intune Win32 (`.intunewin`) packages from Wi
 - **`install.ps1`**, **`detection.ps1`**, and **`uninstall.ps1`** following Intune Win32 best practices (transcript logging, return codes, sysnative PowerShell invocation)
 - **`README.md`** with every Intune portal field documented in Markdown (name, description, publisher, developer, version, commands, detection, return codes, and more)
 - **`win32LobApp.json`** and **`app.json`** metadata exports
+- **Test in Sandbox** — enable Windows Sandbox if needed, then confirm install, detection, and uninstall before marking the package validated
 - Tiered icon resolution (installer extraction first, then Winget/homepage, then web search)
 - **`wingetter-packaging.log`** written when a packaging run fails
 - Settings persistence (`%AppData%\Wingetter\settings.json`)
@@ -62,7 +63,7 @@ Or launch via the main script with no parameters:
 5. Click **Create Package** and watch the **live progress tracker** and step list.
 6. Preview the resolved **icon** in the right panel.
 7. When packaging finishes, pick the best icon from the **icon picker** if multiple candidates were found.
-8. When complete, click **Open Output Folder** to review the generated files.
+8. When complete, click **Open Output Folder** to review the generated files, or **Test in Sandbox** to validate install, detection, and uninstall.
 
 ## CLI Usage
 
@@ -174,6 +175,7 @@ Get-WingetPackageDetails -PackageId 'Google.Chrome'
 Invoke-WingetterPackaging -PackageId 'Google.Chrome' -OutputPath 'C:\Out'
 Test-WingetterPrerequisites
 Install-WingetterContentPrepTool   # winget install Microsoft.Win32ContentPrepTool
+Test-WingetterWindowsSandbox
 Get-WingetterSettings
 ```
 
@@ -236,7 +238,19 @@ Startup details are always written to `%TEMP%\Wingetter-launch.log`.
 ### Detection not working after deployment
 
 - Test locally: `powershell -ExecutionPolicy Bypass -File detection.ps1`
+- Use **Test in Sandbox** in the GUI to confirm install, detection, and uninstall before uploading to Intune
 - Review logs in `%ProgramData%\Microsoft\IntuneManagementExtension\Logs\`
+
+## Test in Sandbox
+
+Windows Sandbox (Windows 10/11 Pro, Enterprise, or Education) can install, detect, and uninstall a packaged app in a disposable VM before you upload it to Intune.
+
+1. Create a package so the version folder contains `install.ps1`, `detection.ps1`, `uninstall.ps1`, and the installer.
+2. Click **Test in Sandbox**.
+3. If Windows Sandbox is not enabled, Wingetter prompts to enable the `Containers-DisposableClientVM` optional feature (administrator approval; usually a reboot).
+4. Windows Sandbox starts and runs `install.ps1`. Confirm the step in Wingetter.
+5. Confirm **detection**, then confirm **uninstall**.
+6. If all three steps are confirmed, Wingetter writes `validation.json` and sets `sandboxValidated` on `app.json`.
 
 ## License
 

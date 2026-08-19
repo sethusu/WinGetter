@@ -138,9 +138,19 @@
       </ScrollViewer>
     </Border>
 
-    <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right">
-      <Button x:Name="OpenOutputButton" Content="Open Output Folder" Width="140" Height="34" Margin="0,0,8,0" IsEnabled="False"/>
-      <Button x:Name="PackButton" Content="Create Package" Width="140" Height="34" FontWeight="SemiBold"/>
-    </StackPanel>
+    <DockPanel Grid.Row="4" LastChildFill="True">
+      <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+        <Button x:Name="OpenOutputButton" Content="Open Output Folder" Width="140" Height="34" Margin="0,0,8,0" IsEnabled="False"/>
+        <Button x:Name="TestSandboxButton" Content="Test in Sandbox" Width="140" Height="34" Margin="0,0,8,0" IsEnabled="False"
+                ToolTip="Launch Windows Sandbox and confirm install, detection, and uninstall"/>
+        <Button x:Name="PackButton" Content="Create Package" Width="140" Height="34" FontWeight="SemiBold"/>
+      </StackPanel>
+      <TextBlock x:Name="SandboxStatusText"
+                 Text="Create a package, then use Test in Sandbox to validate install, detection, and uninstall."
+                 Foreground="#5C6B7A"
+                 TextWrapping="Wrap"
+                 VerticalAlignment="Center"
+                 Margin="0,0,12,0"/>
+    </DockPanel>
   </Grid>
 </Window>

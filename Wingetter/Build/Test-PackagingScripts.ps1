@@ -26,6 +26,7 @@ $required = @(
     (Join-Path $root 'Start-Wingetter.cmd')
     (Join-Path $PSScriptRoot 'Build-WingetterExe.ps1')
     (Join-Path $root 'Gui\Start-WingetterGui.ps1')
+    (Join-Path $root 'Gui\Wingetter.SandboxTestDialog.xaml')
     (Join-Path $root 'Wingetter.psd1')
 )
 
@@ -133,6 +134,34 @@ foreach ($needle in @(
     )) {
     if ($wingetScript -notmatch [regex]::Escape($needle)) {
         $failures += "Private\Winget.ps1 missing expected content: $needle"
+    }
+}
+
+$gui = Get-Content -LiteralPath (Join-Path $root 'Gui\Start-WingetterGui.ps1') -Raw
+foreach ($needle in @(
+        'TestSandboxButton'
+        'Show-WingetterSandboxTestDialog'
+        'Invoke-WingetterSandboxTestFromUi'
+        'Test-WingetterWindowsSandbox'
+    )) {
+    if ($gui -notmatch [regex]::Escape($needle)) {
+        $failures += "Gui\Start-WingetterGui.ps1 missing expected content: $needle"
+    }
+}
+
+$sandboxScript = Get-Content -LiteralPath (Join-Path $privateDir 'Sandbox.ps1') -Raw
+foreach ($needle in @(
+        'Test-WingetterWindowsSandbox'
+        'Install-WingetterWindowsSandbox'
+        'Start-WingetterSandboxSession'
+        'Complete-WingetterSandboxTest'
+        'Containers-DisposableClientVM'
+        'install.ps1'
+        'detection.ps1'
+        'uninstall.ps1'
+    )) {
+    if ($sandboxScript -notmatch [regex]::Escape($needle)) {
+        $failures += "Private\Sandbox.ps1 missing expected content: $needle"
     }
 }
 

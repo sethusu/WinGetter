@@ -349,9 +349,10 @@ The detection script checks Windows uninstall registry keys (64-bit and 32-bit W
 ## Next Steps
 
 1. Review ``install.ps1``, ``uninstall.ps1``, and ``detection.ps1``.
-2. Upload ``$IntuneWinFileName`` to Intune (**Apps** -> **Windows** -> **Add** -> **Windows app (Win32)**).
-3. Use the values in the table above when completing the Intune wizard.
-4. Assign the app to a test group before broad deployment.
+2. Optionally use **Test in Sandbox** in Wingetter to confirm install, detection, and uninstall.
+3. Upload ``$IntuneWinFileName`` to Intune (**Apps** -> **Windows** -> **Add** -> **Windows app (Win32)**).
+4. Use the values in the table above when completing the Intune wizard.
+5. Assign the app to a test group before broad deployment.
 "@
 }
 

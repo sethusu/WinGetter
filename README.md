@@ -85,7 +85,8 @@ Or launch the GUI directly:
 6. Choose an **output folder** (default base: `Documents\Wingetter`; each app uses a subfolder named after its package ID).
 7. Click **Create Package** and wait for the progress steps to finish.
 8. If multiple icons were found, pick the best match in the **icon picker** dialog.
-9. Open the output folder and upload the `.intunewin` to Intune using the included `README.md` as your field guide.
+9. Click **Test in Sandbox** to install, detect, and uninstall in Windows Sandbox, confirming each step.
+10. Open the output folder and upload the `.intunewin` to Intune using the included `README.md` as your field guide.
 
 ---
 
@@ -138,6 +139,7 @@ Documents\Wingetter\
         ├── win32LobApp.json
         ├── icon.png
         ├── .icon-candidates\         ← Alternate icons (GUI picker)
+        ├── validation.json           ← Written after a successful Test in Sandbox run
         └── ..\GoogleChromeStandaloneEnterprise64.intunewin
 ```
 
@@ -155,6 +157,7 @@ Default output path and last-used settings are saved to:
 - **Icon picker after packaging** — choose among up to 3 downloaded icon candidates
 - **Custom icon** — browse for your own PNG before packaging
 - **Open output folder** when done
+- **Test in Sandbox** — launch Windows Sandbox, run `install.ps1`, confirm, run `detection.ps1`, confirm, run `uninstall.ps1`, confirm; if all three are confirmed the package is marked validated
 
 ---
 
@@ -181,7 +184,7 @@ If the auto-selected icon looks wrong, use the **post-packaging icon picker** in
 
 | Packaging failed | Check `wingetter-packaging.log` in the version output folder and the GUI log panel |
 | Wrong icon | Use the icon picker after packaging, or set a custom PNG before packaging |
-| Detection fails on devices | Run `detection.ps1` locally; review logs in `%ProgramData%\Microsoft\IntuneManagementExtension\Logs\` |
+| Detection fails on devices | Run `detection.ps1` locally or use **Test in Sandbox**; review logs in `%ProgramData%\Microsoft\IntuneManagementExtension\Logs\` |
 | GUI won't start | Double-click `Wingetter.exe` from a built `dist\Wingetter` folder, or run from PowerShell 5.1+ on Windows; WPF requires a desktop session |
 | Antivirus blocks `Wingetter.exe` | ps2exe wrappers are occasionally flagged; build from source with `.\Build\Build-WingetterExe.ps1` or use `Start-Wingetter.cmd` / the `.ps1` entry points |
 
@@ -221,6 +224,7 @@ Import-Module .\Wingetter\Wingetter.psd1
 Search-WingetPackages -Query 'chrome'
 Get-WingetPackageDetails -PackageId 'Google.Chrome'
 Invoke-WingetterPackaging -PackageId 'Google.Chrome' -OutputPath 'C:\Out'
+Test-WingetterWindowsSandbox
 ```
 
 ---
