@@ -23,21 +23,56 @@ function Get-ImageMimeType {
     return $null
 }
 
+function Get-WingetDownloadArguments {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$PackageId,
+        [Parameter(Mandatory = $true)]
+        [string]$DownloadDirectory,
+        [string]$Version,
+        [string]$Source,
+        [switch]$AcceptPackageAgreements
+    )
+
+    $arguments = @(
+        $PackageId
+        '--exact'
+        '--download-directory'
+        $DownloadDirectory
+        '--accept-source-agreements'
+    )
+
+    if ($AcceptPackageAgreements) {
+        $arguments += '--accept-package-agreements'
+    }
+
+    if ($Version) {
+        $arguments += @('--version', $Version)
+    }
+
+    $resolvedSource = Resolve-WingetShowSourceArgument -Source $Source
+    if ($resolvedSource) {
+        $arguments += @('--source', $resolvedSource)
+    }
+
+    return $arguments
+}
+
 function Start-WingetInstallerDownload {
     param(
         [string]$PackageId,
         [string]$DownloadDirectory,
         [string]$PackageName,
+        [string]$Version,
+        [string]$Source,
         [scriptblock]$OnProgress
     )
 
     $supportsAgreements = Test-WingetPackageAgreementsSupported -Command download
+    $downloadArguments = Get-WingetDownloadArguments -PackageId $PackageId -DownloadDirectory $DownloadDirectory `
+        -Version $Version -Source $Source -AcceptPackageAgreements:($supportsAgreements)
     $job = Start-Job -ScriptBlock {
-        if ($using:supportsAgreements) {
-            winget download $using:PackageId --exact --download-directory $using:DownloadDirectory --accept-source-agreements --accept-package-agreements 2>&1
-        } else {
-            winget download $using:PackageId --exact --download-directory $using:DownloadDirectory --accept-source-agreements 2>&1
-        }
+        winget download @using:downloadArguments 2>&1
     }
 
     $previousSize = 0

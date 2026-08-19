@@ -365,3 +365,32 @@ Describe 'Get-WingetPackageDetails source fallback' {
         }
     }
 }
+
+Describe 'Get-WingetDownloadArguments' {
+    It 'Includes version and source when provided' {
+        InModuleScope Wingetter {
+            Mock Get-WingetConfiguredSources { return @('winget', 'msstore') }
+            $args = Get-WingetDownloadArguments -PackageId 'Prusa3D.PrusaSlicer' `
+                -DownloadDirectory 'C:\Temp\dl' -Version '2.9.6' -Source 'winget' -AcceptPackageAgreements
+
+            $args | Should -Contain 'Prusa3D.PrusaSlicer'
+            $args | Should -Contain '--exact'
+            $args | Should -Contain '--download-directory'
+            $args | Should -Contain 'C:\Temp\dl'
+            $args | Should -Contain '--version'
+            $args | Should -Contain '2.9.6'
+            $args | Should -Contain '--source'
+            $args | Should -Contain 'winget'
+            $args | Should -Contain '--accept-package-agreements'
+        }
+    }
+
+    It 'Omits unknown source names' {
+        InModuleScope Wingetter {
+            Mock Get-WingetConfiguredSources { return @('winget') }
+            $args = Get-WingetDownloadArguments -PackageId 'Google.Chrome' -DownloadDirectory 'C:\Temp\dl' -Source 'not-a-real-source'
+
+            $args | Should -Not -Contain '--source'
+        }
+    }
+}
