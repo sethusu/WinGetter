@@ -4,6 +4,7 @@ function Invoke-WingetterPackaging {
         [Parameter(Mandatory = $true)]
         [string]$PackageId,
         [string]$Version,
+        [string]$Source,
         [string]$OutputPath = (Get-WingetterSettings).OutputPath,
         [string]$IconPath,
         [switch]$CollectIconCandidates,
@@ -17,7 +18,7 @@ function Invoke-WingetterPackaging {
 
     try {
         Write-WingetterProgress -Step 1 -TotalSteps $totalSteps -StepName 'Loading package details' -Percent 5 -Message "Fetching details for $PackageId" -OnProgress $OnProgress
-        $details = Get-WingetPackageDetails -PackageId $PackageId -Version $Version
+        $details = Get-WingetPackageDetails -PackageId $PackageId -Version $Version -Source $Source
         $details | Add-Member -NotePropertyName Developer -NotePropertyValue $details.Publisher -Force
 
         Write-WingetterProgress -Step 2 -TotalSteps $totalSteps -StepName 'Creating directories' -Percent 10 -Message 'Creating output folders' -OnProgress $OnProgress
@@ -35,7 +36,8 @@ function Invoke-WingetterPackaging {
         }
 
         Write-WingetterProgress -Step 3 -TotalSteps $totalSteps -StepName 'Downloading installer' -Percent 15 -Message 'Starting Winget download' -OnProgress $OnProgress
-        $null = Start-WingetInstallerDownload -PackageId $details.PackageId -DownloadDirectory $versionDirectory -PackageName $details.DisplayName -OnProgress $OnProgress
+        $null = Start-WingetInstallerDownload -PackageId $details.PackageId -DownloadDirectory $versionDirectory `
+            -PackageName $details.DisplayName -Version $details.Version -Source $details.Source -OnProgress $OnProgress
         Start-Sleep -Seconds 1
 
         $installerFile = Get-ChildItem -Path $versionDirectory -File -ErrorAction SilentlyContinue |
