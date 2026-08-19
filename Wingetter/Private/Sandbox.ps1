@@ -634,7 +634,8 @@ function New-WingetterSandboxWsbContent {
     $handshakeHost = ConvertTo-WingetterXmlText -Value $HostHandshakePath.TrimEnd('\')
     $packageSandbox = ConvertTo-WingetterXmlText -Value $PackageSandboxPath
     $handshakeSandbox = ConvertTo-WingetterXmlText -Value $HandshakeSandboxPath
-    $guestScript = Join-Path $HandshakeSandboxPath $GuestScriptFileName
+    # Sandbox-side Windows paths must not use Join-Path (that resolves drives on the host).
+    $guestScript = ($HandshakeSandboxPath.TrimEnd('\')) + '\' + $GuestScriptFileName
     $logonCommand = ConvertTo-WingetterXmlText -Value (
         "powershell.exe -NoProfile -ExecutionPolicy Bypass -NoExit -WindowStyle Normal -File `"$guestScript`""
     )
