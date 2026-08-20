@@ -1,5 +1,13 @@
 # Wingetter Changelog
 
+## Version 2.3.1 - 2026-08-20
+
+### Test in Sandbox
+- Fixed **Confirm this step** staying disabled after install/detect/uninstall finished successfully in Windows Sandbox
+- Host now reads `status.json` with shared file access so guest updates are not blocked by the polling UI
+- Guest status/heartbeat writes use in-place file updates instead of temp-file rename, which is more reliable on mapped Sandbox folders
+- When `status.json` lags behind, Wingetter falls back to `guest.log` completion lines to enable confirmation
+
 ## Version 2.3.0 - 2026-08-19
 
 ### Test in Sandbox

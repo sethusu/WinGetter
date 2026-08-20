@@ -262,3 +262,75 @@ Describe 'Set-WingetterSandboxCommand' {
         }
     }
 }
+
+Describe 'Resolve-WingetterSandboxStepStatus' {
+    It 'Falls back to guest.log when status.json is still running' {
+        $handshake = Join-Path ([System.IO.Path]::GetTempPath()) ("wingetter-sandbox-status-{0}" -f ([Guid]::NewGuid().ToString('N')))
+        New-Item -ItemType Directory -Path $handshake -Force | Out-Null
+        try {
+            @{
+                step = 'install'
+                state = 'running'
+                exitCode = $null
+                message = 'Running install.ps1'
+                updatedAt = (Get-Date).ToUniversalTime().ToString('o')
+            } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $handshake 'status.json') -Encoding UTF8
+
+            @(
+                '2026-08-19 21:25:00 Starting install.ps1'
+                '2026-08-19 21:25:46 install.ps1 finished with exit code 0.'
+            ) | Set-Content -LiteralPath (Join-Path $handshake 'guest.log') -Encoding UTF8
+
+            $status = Resolve-WingetterSandboxStepStatus -HandshakeDirectory $handshake -Step install
+            $status.state | Should -Be 'completed'
+            $status.exitCode | Should -Be 0
+            $status.source | Should -Be 'guest.log'
+        } finally {
+            Remove-Item -LiteralPath $handshake -Recurse -Force
+        }
+    }
+
+    It 'Prefers status.json when it reports completion' {
+        $handshake = Join-Path ([System.IO.Path]::GetTempPath()) ("wingetter-sandbox-status-{0}" -f ([Guid]::NewGuid().ToString('N')))
+        New-Item -ItemType Directory -Path $handshake -Force | Out-Null
+        try {
+            @{
+                step = 'install'
+                state = 'completed'
+                exitCode = 0
+                message = 'install.ps1 finished with exit code 0.'
+                updatedAt = (Get-Date).ToUniversalTime().ToString('o')
+            } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $handshake 'status.json') -Encoding UTF8
+
+            $status = Resolve-WingetterSandboxStepStatus -HandshakeDirectory $handshake -Step install
+            $status.state | Should -Be 'completed'
+            $status.exitCode | Should -Be 0
+            $status.PSObject.Properties.Name | Should -Not -Contain 'source'
+        } finally {
+            Remove-Item -LiteralPath $handshake -Recurse -Force
+        }
+    }
+
+    It 'Reads status.json written with shared file access' {
+        $handshake = Join-Path ([System.IO.Path]::GetTempPath()) ("wingetter-sandbox-status-{0}" -f ([Guid]::NewGuid().ToString('N')))
+        New-Item -ItemType Directory -Path $handshake -Force | Out-Null
+        try {
+            InModuleScope Wingetter {
+                $path = Join-Path $using:handshake 'status.json'
+                Write-WingetterSandboxJson -Path $path -Object @{
+                    step = 'detect'
+                    state = 'completed'
+                    exitCode = 1
+                    message = 'detection.ps1 finished with exit code 1.'
+                    updatedAt = (Get-Date).ToUniversalTime().ToString('o')
+                }
+            }
+
+            $status = Resolve-WingetterSandboxStepStatus -HandshakeDirectory $handshake -Step detect
+            $status.state | Should -Be 'completed'
+            $status.exitCode | Should -Be 1
+        } finally {
+            Remove-Item -LiteralPath $handshake -Recurse -Force
+        }
+    }
+}

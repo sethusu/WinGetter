@@ -41,6 +41,7 @@ Export-ModuleMember -Function @(
     'Get-WingetterSandboxStatus'
     'Get-WingetterSandboxHeartbeat'
     'Get-WingetterSandboxGuestLog'
+    'Resolve-WingetterSandboxStepStatus'
     'Stop-WingetterSandboxSession'
     'Test-WingetterSandboxConfirmations'
     'Complete-WingetterSandboxTest'

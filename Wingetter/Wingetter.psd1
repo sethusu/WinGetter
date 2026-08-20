@@ -1,5 +1,5 @@
 @{
-    ModuleVersion     = '2.3.0'
+    ModuleVersion     = '2.3.1'
     GUID              = 'a3f8c2e1-9b4d-4f7a-8e6c-1d2b3a4c5e6f'
     Author            = 'Wingetter'
     CompanyName       = 'Wingetter'
@@ -31,6 +31,7 @@
         'Get-WingetterSandboxStatus'
         'Get-WingetterSandboxHeartbeat'
         'Get-WingetterSandboxGuestLog'
+        'Resolve-WingetterSandboxStepStatus'
         'Stop-WingetterSandboxSession'
         'Test-WingetterSandboxConfirmations'
         'Complete-WingetterSandboxTest'
