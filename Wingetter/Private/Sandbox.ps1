@@ -22,9 +22,22 @@ function Write-WingetterSandboxJson {
     }
 
     $json = $Object | ConvertTo-Json -Depth 8
-    $tempPath = "$Path.tmp"
-    Set-Content -LiteralPath $tempPath -Value $json -Encoding UTF8
-    Move-Item -LiteralPath $tempPath -Destination $Path -Force
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
+    $stream = $null
+    try {
+        $stream = [System.IO.File]::Open(
+            $Path,
+            [System.IO.FileMode]::Create,
+            [System.IO.FileAccess]::Write,
+            [System.IO.FileShare]::Read
+        )
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Flush()
+    } finally {
+        if ($stream) {
+            $stream.Dispose()
+        }
+    }
 }
 
 function Read-WingetterSandboxJson {
@@ -33,19 +46,45 @@ function Read-WingetterSandboxJson {
         [string]$Path
     )
 
-    if (-not (Test-Path -LiteralPath $Path)) {
-        return $null
+    foreach ($candidate in @($Path, "$Path.tmp")) {
+        if (-not (Test-Path -LiteralPath $candidate)) {
+            continue
+        }
+
+        for ($attempt = 0; $attempt -lt 3; $attempt++) {
+            try {
+                $stream = [System.IO.File]::Open(
+                    $candidate,
+                    [System.IO.FileMode]::Open,
+                    [System.IO.FileAccess]::Read,
+                    [System.IO.FileShare]::ReadWrite
+                )
+                try {
+                    $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8, $true)
+                    try {
+                        $raw = $reader.ReadToEnd()
+                    } finally {
+                        $reader.Dispose()
+                    }
+                } finally {
+                    $stream.Dispose()
+                }
+
+                if ([string]::IsNullOrWhiteSpace($raw)) {
+                    break
+                }
+
+                return $raw | ConvertFrom-Json
+            } catch {
+                if ($attempt -lt 2) {
+                    Start-Sleep -Milliseconds 50
+                    continue
+                }
+            }
+        }
     }
 
-    try {
-        $raw = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
-        if ([string]::IsNullOrWhiteSpace($raw)) {
-            return $null
-        }
-        return $raw | ConvertFrom-Json
-    } catch {
-        return $null
-    }
+    return $null
 }
 
 function Get-WingetterSandboxFeatureName {
@@ -481,9 +520,22 @@ function Write-GuestLog {
 function Write-GuestJson {
     param([string]$Path, $Object)
     $json = $Object | ConvertTo-Json -Depth 6
-    $tempPath = "$Path.tmp"
-    Set-Content -LiteralPath $tempPath -Value $json -Encoding UTF8
-    Move-Item -LiteralPath $tempPath -Destination $Path -Force
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
+    $stream = $null
+    try {
+        $stream = [System.IO.File]::Open(
+            $Path,
+            [System.IO.FileMode]::Create,
+            [System.IO.FileAccess]::Write,
+            [System.IO.FileShare]::Read
+        )
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Flush()
+    } finally {
+        if ($stream) {
+            $stream.Dispose()
+        }
+    }
 }
 
 function Write-Heartbeat {
@@ -829,6 +881,97 @@ function Get-WingetterSandboxGuestLog {
     } catch {
         return ''
     }
+}
+
+function Get-WingetterSandboxStepScriptName {
+    param(
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('install', 'detect', 'uninstall')]
+        [string]$Step
+    )
+
+    switch ($Step) {
+        'install' { return 'install.ps1' }
+        'detect' { return 'detection.ps1' }
+        'uninstall' { return 'uninstall.ps1' }
+    }
+}
+
+function Get-WingetterSandboxStepCompletionFromLog {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$HandshakeDirectory,
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('install', 'detect', 'uninstall')]
+        [string]$Step
+    )
+
+    $path = Join-Path $HandshakeDirectory 'guest.log'
+    if (-not (Test-Path -LiteralPath $path)) {
+        return $null
+    }
+
+    $scriptName = Get-WingetterSandboxStepScriptName -Step $Step
+    $pattern = [regex]::Escape($scriptName) + ' finished with exit code (-?\d+)\.'
+    $latestExitCode = $null
+    $latestMessage = $null
+
+    try {
+        foreach ($line in (Get-Content -LiteralPath $path -ErrorAction Stop)) {
+            if ($line -match $pattern) {
+                $latestExitCode = [int]$Matches[1]
+                $latestMessage = "$scriptName finished with exit code $latestExitCode."
+            }
+        }
+    } catch {
+        return $null
+    }
+
+    if ($null -eq $latestExitCode) {
+        return $null
+    }
+
+    return [PSCustomObject]@{
+        step = $Step
+        state = 'completed'
+        exitCode = $latestExitCode
+        message = $latestMessage
+        source = 'guest.log'
+    }
+}
+
+function Resolve-WingetterSandboxStepStatus {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$HandshakeDirectory,
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('install', 'detect', 'uninstall')]
+        [string]$Step
+    )
+
+    $status = Get-WingetterSandboxStatus -HandshakeDirectory $HandshakeDirectory
+    if ($status) {
+        $statusStep = [string]$status.step
+        $state = [string]$status.state
+        if ($statusStep -eq $Step -and ($state -eq 'completed' -or $state -eq 'failed')) {
+            return $status
+        }
+    }
+
+    $logStatus = Get-WingetterSandboxStepCompletionFromLog -HandshakeDirectory $HandshakeDirectory -Step $Step
+    if ($logStatus) {
+        return $logStatus
+    }
+
+    if ($status) {
+        $statusStep = [string]$status.step
+        $state = [string]$status.state
+        if ($statusStep -eq $Step -and $state -eq 'running') {
+            return $status
+        }
+    }
+
+    return $null
 }
 
 function Stop-WingetterSandboxSession {
