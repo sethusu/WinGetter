@@ -400,7 +400,7 @@ function Confirm-CurrentSandboxStep {
     $step = $ui.CurrentStep
     if ($ui.StepStates[$step] -ne 'Awaiting') { return }
 
-    $status = Resolve-WingetterSandboxStepStatus -HandshakeDirectory $ui.Session.HandshakeDirectory -Step $step
+    $status = Resolve-WingetterSandboxStepStatus -HandshakeDirectory $ui.Session.HandshakeDirectory -Step $step -LogText $ui.LastLog
     $exitCode = $null
     $message = ''
     $silentUi = $false
@@ -498,7 +498,7 @@ function Update-SandboxDialogFromStatus {
         return
     }
 
-    $status = Resolve-WingetterSandboxStepStatus -HandshakeDirectory $ui.Session.HandshakeDirectory -Step $step
+    $status = Resolve-WingetterSandboxStepStatus -HandshakeDirectory $ui.Session.HandshakeDirectory -Step $step -LogText $ui.LastLog
     if (-not $status) { return }
 
     $statusStep = [string]$status.step

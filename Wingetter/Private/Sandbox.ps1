@@ -87,6 +87,49 @@ function Read-WingetterSandboxJson {
     return $null
 }
 
+function Read-WingetterSandboxText {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [switch]$Raw
+    )
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        if ($Raw) { return '' }
+        return @()
+    }
+
+    try {
+        $stream = [System.IO.File]::Open(
+            $Path,
+            [System.IO.FileMode]::Open,
+            [System.IO.FileAccess]::Read,
+            [System.IO.FileShare]::ReadWrite
+        )
+        try {
+            $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8, $true)
+            try {
+                $text = $reader.ReadToEnd()
+            } finally {
+                $reader.Dispose()
+            }
+        } finally {
+            $stream.Dispose()
+        }
+
+        if ($Raw) {
+            return $text
+        }
+        if ([string]::IsNullOrEmpty($text)) {
+            return @()
+        }
+        return @($text -split '\r\n|\n|\r')
+    } catch {
+        if ($Raw) { return '' }
+        return @()
+    }
+}
+
 function Get-WingetterSandboxFeatureName {
     return 'Containers-DisposableClientVM'
 }
@@ -505,6 +548,7 @@ $packageRoot = 'C:\WingetterTest'
 $handshakeRoot = 'C:\WingetterSandbox'
 $commandPath = Join-Path $handshakeRoot 'command.json'
 $statusPath = Join-Path $handshakeRoot 'status.json'
+$statusNdjsonPath = Join-Path $handshakeRoot 'status.ndjson'
 $heartbeatPath = Join-Path $handshakeRoot 'heartbeat.json'
 $guestLogPath = Join-Path $handshakeRoot 'guest.log'
 
@@ -568,7 +612,22 @@ function Write-Status {
     if ($SilentUiWindows) {
         $payload.silentUiWindows = $SilentUiWindows
     }
-    Write-GuestJson -Path $statusPath -Object $payload
+    # Mapped-folder overwrites of status.json often stay stale on the host.
+    # guest.log appends do propagate, so also append a status line and a new snapshot file.
+    $json = $payload | ConvertTo-Json -Compress -Depth 6
+    try {
+        Add-Content -LiteralPath $statusNdjsonPath -Value $json -Encoding UTF8
+    } catch { }
+    $snapshot = Join-Path $handshakeRoot ('status-' + [DateTime]::UtcNow.ToString('yyyyMMddHHmmssfff') + '.json')
+    try {
+        Write-GuestJson -Path $snapshot -Object $payload
+    } catch { }
+    try {
+        Write-GuestJson -Path $statusPath -Object $payload
+    } catch { }
+    if ($State -eq 'completed' -or $State -eq 'failed') {
+        Write-GuestLog ("STEP_DONE step={0} state={1} exitCode={2}" -f $Step, $State, $ExitCode)
+    }
 }
 
 function Read-CommandAction {
@@ -634,6 +693,26 @@ function Test-IgnoredUiProcess {
     param([string]$ProcessName)
     foreach ($name in $uiIgnoreProcessNames) {
         if ([string]::Equals($name, $ProcessName, [StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Test-IgnoredInstallerSplash {
+    param(
+        [string]$ProcessName,
+        [string]$Title
+    )
+    $t = ([string]$Title).Trim()
+    if ($t -eq '(visible window, no title)') {
+        $t = ''
+    }
+    # Inno Setup unpacks to {installer}.tmp. That process often has a generic
+    # "Setup" window even under /VERYSILENT. The language wizard title is
+    # "Select Setup Language", not "Setup".
+    if ($ProcessName -match '\.tmp$') {
+        if ([string]::IsNullOrWhiteSpace($t) -or $t -eq 'Setup' -or $t -eq 'Installing') {
             return $true
         }
     }
@@ -716,8 +795,49 @@ function Invoke-PackageStep {
         New-Item -ItemType Directory -Path $logDir -Force | Out-Null
     }
 
-    $stdoutPath = Join-Path $stepLogDir 'console-stdout.txt'
-    $stderrPath = Join-Path $stepLogDir 'console-stderr.txt'
+    # Redirect to local disk. Mapped-folder stdout files stay open while the
+    # host polls them, which can prevent powershell.exe from exiting.
+    $localStepDir = Join-Path $env:TEMP ('WingetterStep-' + $Step)
+    if (Test-Path -LiteralPath $localStepDir) {
+        Remove-Item -LiteralPath $localStepDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    New-Item -ItemType Directory -Path $localStepDir -Force | Out-Null
+    $stdoutPath = Join-Path $localStepDir 'console-stdout.txt'
+    $stderrPath = Join-Path $localStepDir 'console-stderr.txt'
+
+    function Copy-LiveStepOutput {
+        try {
+            if (Test-Path -LiteralPath $stdoutPath) {
+                Copy-Item -LiteralPath $stdoutPath -Destination (Join-Path $stepLogDir 'console-stdout.txt') -Force -ErrorAction SilentlyContinue
+            }
+            if (Test-Path -LiteralPath $stderrPath) {
+                Copy-Item -LiteralPath $stderrPath -Destination (Join-Path $stepLogDir 'console-stderr.txt') -Force -ErrorAction SilentlyContinue
+            }
+            $imeLogs = Join-Path $env:ProgramData 'Microsoft\IntuneManagementExtension\Logs'
+            if (Test-Path -LiteralPath $imeLogs) {
+                Get-ChildItem -LiteralPath $imeLogs -File -ErrorAction SilentlyContinue | ForEach-Object {
+                    Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $stepLogDir $_.Name) -Force -ErrorAction SilentlyContinue
+                }
+            }
+        } catch { }
+    }
+
+    function Test-LocalScriptFinished {
+        foreach ($candidate in @($stdoutPath, $stderrPath)) {
+            if (-not (Test-Path -LiteralPath $candidate)) { continue }
+            try {
+                $text = Get-Content -LiteralPath $candidate -Raw -ErrorAction Stop
+                if ($text -match 'Windows PowerShell transcript end') { return $true }
+                if ($text -match 'Install completed successfully') { return $true }
+                if ($text -match 'Uninstall completed successfully') { return $true }
+                if ($text -match 'not detected in registry, exiting with code') { return $true }
+                if ($text -match 'is installed with version') { return $true }
+                if ($text -match 'Uninstall returned exit code:') { return $true }
+                if ($text -match 'Install failed with exit code') { return $true }
+            } catch { }
+        }
+        return $false
+    }
 
     # New visible windows during a silent step mean the installer ignored its
     # switches (for example Inno Setup Select Setup Language).
@@ -727,12 +847,18 @@ function Invoke-PackageStep {
     $timedOut = $false
     $uiDetectedAt = $null
     $deadline = (Get-Date).AddMinutes(12)
+    $ignoredSplashIds = @{}
 
     Set-Location -Path $packageRoot
     $process = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $scriptPath) -PassThru -NoNewWindow -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
 
-    while ($process -and -not $process.HasExited) {
+    $scriptFinished = $false
+    while ($process) {
+        try { $process.Refresh() } catch { }
+        if ($process.HasExited) { break }
+
         Write-Heartbeat
+        Copy-LiveStepOutput
         if ((Get-Date) -gt $deadline) {
             $timedOut = $true
             Write-GuestLog "Timed out waiting for $scriptName after 12 minutes. Stopping the process tree."
@@ -744,13 +870,20 @@ function Invoke-PackageStep {
             if ($_.MainWindowHandle -eq 0 -or $_.MainWindowHandle -eq [IntPtr]::Zero) { return }
             if ($windowBaseline.ContainsKey($_.Id)) { return }
             if (Test-IgnoredUiProcess -ProcessName $_.ProcessName) { return }
-            foreach ($existing in $uiEvents) {
-                if ($existing.processId -eq $_.Id) { return }
-            }
 
             $title = [string]$_.MainWindowTitle
             if ([string]::IsNullOrWhiteSpace($title)) {
                 $title = '(visible window, no title)'
+            }
+            if (Test-IgnoredInstallerSplash -ProcessName $_.ProcessName -Title $title) {
+                if (-not $ignoredSplashIds.ContainsKey($_.Id)) {
+                    $ignoredSplashIds[$_.Id] = $true
+                    Write-GuestLog ("Ignoring Inno extractor window '{0}' ({1}); this is not a setup wizard." -f $title, $_.ProcessName)
+                }
+                return
+            }
+            foreach ($existing in $uiEvents) {
+                if ($existing.processId -eq $_.Id) { return }
             }
             $uiEvents.Add(@{
                 processName = $_.ProcessName
@@ -779,24 +912,65 @@ function Invoke-PackageStep {
             }
         }
 
+        if (-not $scriptFinished -and (Test-LocalScriptFinished)) {
+            $scriptFinished = $true
+            Write-GuestLog "$scriptName output ended; waiting for powershell.exe to exit."
+            try { $process.WaitForExit(15000) | Out-Null } catch { }
+            try { $process.Refresh() } catch { }
+            if (-not $process.HasExited) {
+                Write-GuestLog "$scriptName finished writing output but powershell.exe is still running. Stopping it so confirmation can continue."
+                Stop-ProcessTree -Id $process.Id
+            }
+            break
+        }
+
         Start-Sleep -Seconds 1
     }
 
+    if ($process) {
+        try { $process.Refresh() } catch { }
+    }
     if ($process -and -not $process.HasExited) {
         try { $process.WaitForExit(20000) | Out-Null } catch { }
+        try { $process.Refresh() } catch { }
     }
     if ($process -and -not $process.HasExited) {
         Stop-ProcessTree -Id $process.Id
         try { $process.WaitForExit(5000) | Out-Null } catch { }
+        try { $process.Refresh() } catch { }
     }
+
+    Copy-LiveStepOutput
 
     $exitCode = 1
     if ($killedForUi) {
         $exitCode = 1603
     } elseif ($timedOut) {
         $exitCode = 1603
-    } elseif ($process -and $null -ne $process.ExitCode) {
-        $exitCode = [int]$process.ExitCode
+    } else {
+        $outputExit = $null
+        foreach ($candidate in @($stdoutPath, $stderrPath)) {
+            if (-not (Test-Path -LiteralPath $candidate)) { continue }
+            try {
+                $text = Get-Content -LiteralPath $candidate -Raw -ErrorAction Stop
+                if ($text -match 'Install failed with exit code (-?\d+)') { $outputExit = [int]$Matches[1]; break }
+                if ($text -match 'Uninstall returned exit code:\s*(-?\d+)') { $outputExit = [int]$Matches[1]; break }
+                if ($text -match 'not detected in registry, exiting with code 1') { $outputExit = 1; break }
+                if ($text -match 'Install completed successfully \(hard reboot required - 1641\)') { $outputExit = 1641; break }
+                if ($text -match 'Install completed successfully \(reboot required - 3010\)') { $outputExit = 3010; break }
+                if ($text -match 'Another installation is already in progress \(1618\)') { $outputExit = 1618; break }
+                if ($text -match 'Install completed successfully') { $outputExit = 0; break }
+                if ($text -match 'Uninstall completed successfully') { $outputExit = 0; break }
+                if ($text -match 'is installed with version') { $outputExit = 0; break }
+            } catch { }
+        }
+        if ($null -ne $outputExit) {
+            $exitCode = $outputExit
+        } elseif ($process -and $null -ne $process.ExitCode -and [int]$process.ExitCode -ge 0) {
+            $exitCode = [int]$process.ExitCode
+        } elseif ($scriptFinished) {
+            $exitCode = 0
+        }
     }
 
     $silentUi = ($uiEvents.Count -gt 0)
@@ -1029,7 +1203,50 @@ function Get-WingetterSandboxStatus {
         [string]$HandshakeDirectory
     )
 
-    return (Read-WingetterSandboxJson -Path (Join-Path $HandshakeDirectory 'status.json'))
+    $candidates = New-Object System.Collections.Generic.List[object]
+
+    foreach ($name in @('status.json')) {
+        $obj = Read-WingetterSandboxJson -Path (Join-Path $HandshakeDirectory $name)
+        if ($obj) {
+            $candidates.Add($obj) | Out-Null
+        }
+    }
+
+    Get-ChildItem -LiteralPath $HandshakeDirectory -File -Filter 'status-*.json' -ErrorAction SilentlyContinue | ForEach-Object {
+        $obj = Read-WingetterSandboxJson -Path $_.FullName
+        if ($obj) {
+            $candidates.Add($obj) | Out-Null
+        }
+    }
+
+    $ndjsonPath = Join-Path $HandshakeDirectory 'status.ndjson'
+    if (Test-Path -LiteralPath $ndjsonPath) {
+        foreach ($line in @(Read-WingetterSandboxText -Path $ndjsonPath)) {
+            if ([string]::IsNullOrWhiteSpace($line)) { continue }
+            try {
+                $candidates.Add(($line | ConvertFrom-Json)) | Out-Null
+            } catch { }
+        }
+    }
+
+    if ($candidates.Count -eq 0) {
+        return $null
+    }
+
+    $best = $candidates[0]
+    $bestTime = [datetime]::MinValue
+    foreach ($candidate in $candidates) {
+        $stamp = [datetime]::MinValue
+        if ($candidate.updatedAt) {
+            try { $stamp = [datetime]$candidate.updatedAt } catch { }
+        }
+        if ($stamp -ge $bestTime) {
+            $bestTime = $stamp
+            $best = $candidate
+        }
+    }
+
+    return $best
 }
 
 function Get-WingetterSandboxHeartbeat {
@@ -1077,15 +1294,13 @@ function Get-WingetterSandboxGuestLog {
     $blocks = New-Object System.Collections.Generic.List[string]
     $path = Join-Path $HandshakeDirectory 'guest.log'
     if (Test-Path -LiteralPath $path) {
-        try {
-            $lines = Get-Content -LiteralPath $path -ErrorAction Stop
-            if ($Tail -gt 0 -and $lines.Count -gt $Tail) {
-                $lines = $lines | Select-Object -Last $Tail
-            }
-            if ($lines) {
-                $blocks.Add(($lines -join "`r`n")) | Out-Null
-            }
-        } catch { }
+        $lines = @(Read-WingetterSandboxText -Path $path)
+        if ($Tail -gt 0 -and $lines.Count -gt $Tail) {
+            $lines = $lines | Select-Object -Last $Tail
+        }
+        if ($lines) {
+            $blocks.Add(($lines -join "`r`n")) | Out-Null
+        }
     }
 
     if ($IncludeStepLogs) {
@@ -1105,16 +1320,14 @@ function Get-WingetterSandboxGuestLog {
                     Select-Object -First 1
             }
             if ($ime) {
-                try {
-                    $stepLines = Get-Content -LiteralPath $ime.FullName -ErrorAction Stop
-                    if ($Tail -gt 0 -and $stepLines.Count -gt $Tail) {
-                        $stepLines = $stepLines | Select-Object -Last $Tail
-                    }
-                    if ($stepLines) {
-                        $blocks.Add(('--- {0} ({1}) ---' -f $step, $ime.Name)) | Out-Null
-                        $blocks.Add(($stepLines -join "`r`n")) | Out-Null
-                    }
-                } catch { }
+                $stepLines = @(Read-WingetterSandboxText -Path $ime.FullName)
+                if ($Tail -gt 0 -and $stepLines.Count -gt $Tail) {
+                    $stepLines = $stepLines | Select-Object -Last $Tail
+                }
+                if ($stepLines) {
+                    $blocks.Add(('--- {0} ({1}) ---' -f $step, $ime.Name)) | Out-Null
+                    $blocks.Add(($stepLines -join "`r`n")) | Out-Null
+                }
             }
         }
     }
@@ -1192,11 +1405,14 @@ function Copy-WingetterSandboxLogsToPackage {
         Copy-Item -LiteralPath $guestLog -Destination (Join-Path $dest 'guest.log') -Force -ErrorAction SilentlyContinue
     }
 
-    foreach ($name in @('command.json', 'status.json', 'heartbeat.json')) {
+    foreach ($name in @('command.json', 'status.json', 'heartbeat.json', 'status.ndjson')) {
         $source = Join-Path $HandshakeDirectory $name
         if (Test-Path -LiteralPath $source) {
             Copy-Item -LiteralPath $source -Destination (Join-Path $dest $name) -Force -ErrorAction SilentlyContinue
         }
+    }
+    Get-ChildItem -LiteralPath $HandshakeDirectory -File -Filter 'status-*.json' -ErrorAction SilentlyContinue | ForEach-Object {
+        Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $dest $_.Name) -Force -ErrorAction SilentlyContinue
     }
 
     $logsRoot = Join-Path $HandshakeDirectory 'logs'
@@ -1328,9 +1544,16 @@ function Write-WingetterSandboxTestReport {
     [void]$builder.AppendLine('')
 
     $statusJson = ''
+    $statusNdjson = ''
     $commandJson = ''
     if ($HandshakeDirectory) {
-        $statusJson = Read-WingetterTextFile -Path (Join-Path $HandshakeDirectory 'status.json') -MaxChars 4000
+        $latestStatus = Get-WingetterSandboxStatus -HandshakeDirectory $HandshakeDirectory
+        if ($latestStatus) {
+            $statusJson = ($latestStatus | ConvertTo-Json -Depth 6)
+        } else {
+            $statusJson = Read-WingetterTextFile -Path (Join-Path $HandshakeDirectory 'status.json') -MaxChars 4000
+        }
+        $statusNdjson = Read-WingetterTextFile -Path (Join-Path $HandshakeDirectory 'status.ndjson') -MaxChars 8000
         $commandJson = Read-WingetterTextFile -Path (Join-Path $HandshakeDirectory 'command.json') -MaxChars 2000
     }
     if ($commandJson) {
@@ -1341,6 +1564,11 @@ function Write-WingetterSandboxTestReport {
     if ($statusJson) {
         [void]$builder.AppendLine('--- status.json ---')
         [void]$builder.AppendLine($statusJson)
+        [void]$builder.AppendLine('')
+    }
+    if ($statusNdjson) {
+        [void]$builder.AppendLine('--- status.ndjson ---')
+        [void]$builder.AppendLine($statusNdjson)
         [void]$builder.AppendLine('')
     }
 
@@ -1543,6 +1771,126 @@ function Get-WingetterSandboxStepScriptName {
     }
 }
 
+function Get-WingetterSandboxStepCompletionFromText {
+    param(
+        [string]$Text,
+        [Parameter(Mandatory = $true)]
+        [ValidateSet('install', 'detect', 'uninstall')]
+        [string]$Step,
+        [string]$Source = 'log'
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return $null
+    }
+
+    $scriptName = Get-WingetterSandboxStepScriptName -Step $Step
+    $finished = $false
+    $exitCode = $null
+    $message = $null
+
+    if ($Text -match ([regex]::Escape($scriptName) + ' finished with exit code (-?\d+)\.')) {
+        $finished = $true
+        $exitCode = [int]$Matches[1]
+        $message = "$scriptName finished with exit code $exitCode."
+    }
+
+    if ($Text -match 'Windows PowerShell transcript end') {
+        $finished = $true
+        if (-not $message) {
+            $message = "$scriptName finished (transcript ended)."
+        }
+    }
+
+    switch ($Step) {
+        'install' {
+            if ($Text -match 'Install completed successfully \(hard reboot required - 1641\)') {
+                $finished = $true
+                if ($null -eq $exitCode) { $exitCode = 1641 }
+            } elseif ($Text -match 'Install completed successfully \(reboot required - 3010\)') {
+                $finished = $true
+                if ($null -eq $exitCode) { $exitCode = 3010 }
+            } elseif ($Text -match 'Install completed successfully') {
+                $finished = $true
+                if ($null -eq $exitCode) { $exitCode = 0 }
+            } elseif ($Text -match 'Another installation is already in progress \(1618\)') {
+                $finished = $true
+                if ($null -eq $exitCode) { $exitCode = 1618 }
+            } elseif ($Text -match 'Install failed with exit code (-?\d+)') {
+                $finished = $true
+                if ($null -eq $exitCode) { $exitCode = [int]$Matches[1] }
+            }
+        }
+        'detect' {
+            if ($Text -match 'not detected in registry, exiting with code 1') {
+                $finished = $true
+                if ($null -eq $exitCode) { $exitCode = 1 }
+            } elseif ($Text -match 'is installed with version' -or $Text -match 'Detected version:') {
+                $finished = $true
+                if ($null -eq $exitCode) { $exitCode = 0 }
+            }
+        }
+        'uninstall' {
+            if ($Text -match 'Uninstall completed successfully') {
+                $finished = $true
+                if ($null -eq $exitCode) { $exitCode = 0 }
+            } elseif ($Text -match 'Uninstall returned exit code:\s*(-?\d+)') {
+                $finished = $true
+                if ($null -eq $exitCode) { $exitCode = [int]$Matches[1] }
+            } elseif ($Text -match 'Uninstall string not found') {
+                $finished = $true
+                if ($null -eq $exitCode) { $exitCode = 1 }
+            }
+        }
+    }
+
+    if ($Text -match ([regex]::Escape($scriptName) + ' was not silent') -or
+        $Text -match ('STEP_DONE step=' + [regex]::Escape($Step)) -or
+        $Text -match 'Waiting for confirmation in Wingetter') {
+        $finished = $true
+        if ($null -eq $exitCode -and $Text -match 'Exit code (\-?\d+)') {
+            $exitCode = [int]$Matches[1]
+        }
+        if ($null -eq $exitCode -and $Text -match ('STEP_DONE step=' + [regex]::Escape($Step) + ' state=\S+ exitCode=(\-?\d+)')) {
+            $exitCode = [int]$Matches[1]
+        }
+        if (-not $message) {
+            $message = "$scriptName finished."
+        }
+    }
+
+    # Packaged install.ps1 success beats a false "not silent" kill/exit code.
+    if ($Step -eq 'install' -and $Text -match 'Install completed successfully') {
+        $finished = $true
+        if ($Text -match 'hard reboot required - 1641') {
+            $exitCode = 1641
+        } elseif ($Text -match 'reboot required - 3010') {
+            $exitCode = 3010
+        } else {
+            $exitCode = 0
+        }
+        $message = "$scriptName finished with exit code $exitCode."
+    }
+
+    if (-not $finished) {
+        return $null
+    }
+    if ($null -eq $exitCode) {
+        $exitCode = 0
+    }
+    if (-not $message) {
+        $message = "$scriptName finished with exit code $exitCode."
+    }
+
+    return [PSCustomObject]@{
+        step = $Step
+        state = 'completed'
+        exitCode = $exitCode
+        message = $message
+        source = $Source
+    }
+}
+
 function Get-WingetterSandboxStepCompletionFromLog {
     param(
         [Parameter(Mandatory = $true)]
@@ -1552,38 +1900,29 @@ function Get-WingetterSandboxStepCompletionFromLog {
         [string]$Step
     )
 
-    $path = Join-Path $HandshakeDirectory 'guest.log'
-    if (-not (Test-Path -LiteralPath $path)) {
-        return $null
+    $chunks = New-Object System.Collections.Generic.List[string]
+    $guestLog = Join-Path $HandshakeDirectory 'guest.log'
+    if (Test-Path -LiteralPath $guestLog) {
+        $chunks.Add((Read-WingetterSandboxText -Path $guestLog -Raw)) | Out-Null
     }
 
-    $scriptName = Get-WingetterSandboxStepScriptName -Step $Step
-    $pattern = [regex]::Escape($scriptName) + ' finished with exit code (-?\d+)\.'
-    $latestExitCode = $null
-    $latestMessage = $null
-
-    try {
-        foreach ($line in (Get-Content -LiteralPath $path -ErrorAction Stop)) {
-            if ($line -match $pattern) {
-                $latestExitCode = [int]$Matches[1]
-                $latestMessage = "$scriptName finished with exit code $latestExitCode."
+    $stepDir = Join-Path (Join-Path $HandshakeDirectory 'logs') $Step
+    if (Test-Path -LiteralPath $stepDir) {
+        Get-ChildItem -LiteralPath $stepDir -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -eq 'console-stdout.txt' -or $_.Name -eq 'console-stderr.txt' -or $_.Name -like '*.log' } |
+            ForEach-Object {
+                $chunks.Add((Read-WingetterSandboxText -Path $_.FullName -Raw)) | Out-Null
             }
-        }
-    } catch {
-        return $null
     }
 
-    if ($null -eq $latestExitCode) {
-        return $null
+    $text = ($chunks -join "`n")
+    $source = if ($text -match 'Windows PowerShell transcript end' -or $text -match 'Install completed successfully') {
+        'step-log'
+    } else {
+        'guest.log'
     }
 
-    return [PSCustomObject]@{
-        step = $Step
-        state = 'completed'
-        exitCode = $latestExitCode
-        message = $latestMessage
-        source = 'guest.log'
-    }
+    return Get-WingetterSandboxStepCompletionFromText -Text $text -Step $Step -Source $source
 }
 
 function Resolve-WingetterSandboxStepStatus {
@@ -1592,7 +1931,8 @@ function Resolve-WingetterSandboxStepStatus {
         [string]$HandshakeDirectory,
         [Parameter(Mandatory = $true)]
         [ValidateSet('install', 'detect', 'uninstall')]
-        [string]$Step
+        [string]$Step,
+        [string]$LogText
     )
 
     $status = Get-WingetterSandboxStatus -HandshakeDirectory $HandshakeDirectory
@@ -1605,6 +1945,9 @@ function Resolve-WingetterSandboxStepStatus {
     }
 
     $logStatus = Get-WingetterSandboxStepCompletionFromLog -HandshakeDirectory $HandshakeDirectory -Step $Step
+    if (-not $logStatus -and $LogText) {
+        $logStatus = Get-WingetterSandboxStepCompletionFromText -Text $LogText -Step $Step -Source 'dialog-log'
+    }
     if ($logStatus) {
         return $logStatus
     }

@@ -168,6 +168,12 @@ foreach ($needle in @(
         'Save-DesktopScreenshot'
         'ui-activity.json'
         'Resolve-WingetterSandboxStepStatus'
+        'WingetterStep-'
+        'Windows PowerShell transcript end'
+        'process.Refresh'
+        'status.ndjson'
+        'Ignoring Inno extractor window'
+        'STEP_DONE'
     )) {
     if ($sandboxScript -notmatch [regex]::Escape($needle)) {
         $failures += "Private\Sandbox.ps1 missing expected content: $needle"

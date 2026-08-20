@@ -1,5 +1,15 @@
 # Wingetter Changelog
 
+## Version 2.4.1 - 2026-08-20
+
+### Test in Sandbox
+- **Confirm this step** now enables when the install/detect/uninstall transcript ends (`Install completed successfully` / `Windows PowerShell transcript end`), even if `status.json` is still `running`
+- Guest coordinator redirects script output to local temp (not the mapped handshake folder), copies logs to the host, and stops a hung `powershell.exe` after the transcript ends
+- Host log polling uses shared file reads so it does not lock the guest's redirected output files
+- Inno `{installer}.tmp` windows titled **Setup** are ignored (extractor splash), not treated as a failed silent install
+- Status updates are appended to `status.ndjson` because mapped-folder overwrites of `status.json` often never reach the host
+- A successful `Install completed successfully` line wins over a coordinator "not silent" / exit code 1 so Confirm/Fail can enable
+
 ## Version 2.4.0 - 2026-08-20
 
 ### Test in Sandbox
