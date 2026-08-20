@@ -125,7 +125,7 @@ try {
     }
 
     $result = Invoke-WingetterPackaging -PackageId $selectedPackage.Id -Version $packageVersion `
-        -OutputPath $OutputPath -IconPath $IconPath -OnProgress $onProgress
+        -Source $selectedPackage.Source -OutputPath $OutputPath -IconPath $IconPath -OnProgress $onProgress
 
     if ($result.PackagingSucceeded) {
         Write-Host "`nPackage created successfully!" -ForegroundColor Green

@@ -223,9 +223,9 @@ function Show-WingetterSearchDialog {
         $radio.FontWeight = [System.Windows.FontWeights]::SemiBold
         $radio.Tag = $package
 
-        $capturedPackage = $package
         $radio.Add_Checked({
-            $dialogSelection.Package = $capturedPackage
+            param($sender, $e)
+            $dialogSelection.Package = $sender.Tag
         })
 
         if (-not $firstRadio) {
@@ -608,9 +608,9 @@ function Show-WingetterIconPickerDialog {
         $radio.Margin = New-WpfThickness -Bottom 8
         $radio.Tag = $candidate
 
-        $capturedCandidate = $candidate
         $radio.Add_Checked({
-            $selection.Candidate = $capturedCandidate
+            param($sender, $e)
+            $selection.Candidate = $sender.Tag
         })
 
         if (-not $firstRadio) {
@@ -834,7 +834,7 @@ function Start-WingetterBackgroundPackaging {
     $powershell.Runspace = $runspace
 
     $null = $powershell.AddScript({
-        param($ModulePath, $PackageId, $Version, $OutputPath, $IconPath, $CollectIconCandidates, $Queue)
+        param($ModulePath, $PackageId, $Version, $Source, $OutputPath, $IconPath, $CollectIconCandidates, $Queue)
         Import-Module $ModulePath -Force
         $onProgress = {
             param($Event)
@@ -846,12 +846,14 @@ function Start-WingetterBackgroundPackaging {
             OnProgress = $onProgress
         }
         if ($Version) { $params.Version = $Version }
+        if ($Source) { $params.Source = $Source }
         if ($IconPath) { $params.IconPath = $IconPath }
         if ($CollectIconCandidates) { $params.CollectIconCandidates = $true }
         Invoke-WingetterPackaging @params
     }).AddArgument($modulePath).
       AddArgument($PackArguments.PackageId).
       AddArgument($PackArguments.Version).
+      AddArgument($PackArguments.Source).
       AddArgument($PackArguments.OutputPath).
       AddArgument($PackArguments.IconPath).
       AddArgument([bool]$PackArguments.CollectIconCandidates).
@@ -1149,9 +1151,7 @@ function Update-SelectedAppDisplay {
         $sourcePart = if ($script:selectedPackage.Source) { " | Source: $($script:selectedPackage.Source)" } else { '' }
         $selectedAppText.Text = "Selected: $($script:selectedPackage.Name) | $($script:selectedPackage.Id) | Version: $($script:selectedPackage.Version)$sourcePart"
         $selectedAppText.Foreground = ConvertTo-WpfBrush '#1B2A41'
-        if (-not $versionBox.Text.Trim()) {
-            $versionBox.Text = if ($script:selectedPackage.Version -ne 'Unknown') { $script:selectedPackage.Version } else { '' }
-        }
+        $versionBox.Text = if ($script:selectedPackage.Version -ne 'Unknown') { $script:selectedPackage.Version } else { '' }
         Update-OutputPathForSelectedApp
     } else {
         $selectedAppText.Text = 'No application selected.'
@@ -1452,6 +1452,7 @@ function Start-WingetterPackagingFromUi {
     $packArguments = @{
         PackageId = $script:selectedPackage.Id
         Version = $packageVersion
+        Source = $script:selectedPackage.Source
         OutputPath = $appOutputPath
         IconPath = $script:customIconPath
         CollectIconCandidates = $true

@@ -9,6 +9,14 @@
 - Marks the package validated (`validation.json` plus `sandboxValidated` on `app.json`) only when install, detect, and uninstall are all confirmed
 - Windows Home and non-Windows hosts get a clear unsupported message instead of a failed launch
 
+## Version 2.2.4 - 2026-08-19
+
+### Search selection and download pinning
+- Fixed GUI search dialog always selecting the **last** search result instead of the radio button you chose (PowerShell loop closure bug). This caused stable packages like PrusaSlicer 2.9.x to be replaced by preview/alpha entries such as PrusaSlicer Alpha 2.6.0-rc2.
+- Fixed the same closure bug in the post-packaging icon picker dialog.
+- `winget download` now passes the selected `--version` and `--source`, matching `winget show` and the generated Intune scripts.
+- The GUI version field refreshes whenever you pick a different search result so a prior override cannot stick to the wrong app.
+
 ## Version 2.2.3 - 2026-07-31
 
 ### App selection crash (invalid winget source)
