@@ -76,6 +76,9 @@ Describe 'New-WingetterSandboxGuestScript' {
             $script | Should -Match 'WingetterStep-'
             $script | Should -Match 'process.Refresh'
             $script | Should -Match 'Windows PowerShell transcript end'
+            $script | Should -Match 'status.ndjson'
+            $script | Should -Match 'Ignoring Inno extractor window'
+            $script | Should -Match 'STEP_DONE'
         }
     }
 }
@@ -461,6 +464,63 @@ Windows PowerShell transcript end
 End time: 20260819214839
 "@
             $status = Resolve-WingetterSandboxStepStatus -HandshakeDirectory $handshake -Step install -LogText $logText
+            $status.state | Should -Be 'completed'
+            $status.exitCode | Should -Be 0
+        } finally {
+            Remove-Item -LiteralPath $handshake -Recurse -Force
+        }
+    }
+
+    It 'Prefers append-only status.ndjson over a stale status.json' {
+        $handshake = Join-Path ([System.IO.Path]::GetTempPath()) ("wingetter-sandbox-status-{0}" -f ([Guid]::NewGuid().ToString('N')))
+        New-Item -ItemType Directory -Path $handshake -Force | Out-Null
+        try {
+            @{
+                step = 'install'
+                state = 'running'
+                exitCode = $null
+                message = 'Running install.ps1'
+                updatedAt = '2026-08-20T03:48:23.2090493Z'
+            } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $handshake 'status.json') -Encoding UTF8
+
+            @(
+                '{"step":"install","state":"running","message":"Running install.ps1","updatedAt":"2026-08-20T03:48:23.2090493Z"}'
+                '{"step":"install","state":"completed","exitCode":0,"message":"install.ps1 finished with exit code 0.","updatedAt":"2026-08-20T03:48:41.3036224Z"}'
+            ) | Set-Content -LiteralPath (Join-Path $handshake 'status.ndjson') -Encoding UTF8
+
+            $status = Get-WingetterSandboxStatus -HandshakeDirectory $handshake
+            $status.state | Should -Be 'completed'
+            $status.exitCode | Should -Be 0
+        } finally {
+            Remove-Item -LiteralPath $handshake -Recurse -Force
+        }
+    }
+
+    It 'Treats a successful install transcript as completed even if coordinator said not silent' {
+        $handshake = Join-Path ([System.IO.Path]::GetTempPath()) ("wingetter-sandbox-status-{0}" -f ([Guid]::NewGuid().ToString('N')))
+        New-Item -ItemType Directory -Path $handshake -Force | Out-Null
+        try {
+            @{
+                step = 'install'
+                state = 'running'
+                message = 'Running install.ps1'
+                updatedAt = '2026-08-20T03:48:23.2090493Z'
+            } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $handshake 'status.json') -Encoding UTF8
+
+            @(
+                '2026-08-19 21:48:23 Starting install.ps1'
+                '2026-08-19 21:48:31 WARNING: interactive window detected during install: ''Setup'' (PrusaSlicer_2.9.6_Machine_X64_inno_en-US.tmp). The step is not silent.'
+                '2026-08-19 21:48:41 install.ps1 was not silent. Interactive window(s): Setup. Exit code 1. Screenshot and logs were copied for diagnostics.'
+            ) | Set-Content -LiteralPath (Join-Path $handshake 'guest.log') -Encoding UTF8
+
+            $stepDir = Join-Path $handshake 'logs\install'
+            New-Item -ItemType Directory -Path $stepDir -Force | Out-Null
+            @(
+                'Install completed successfully.'
+                'Windows PowerShell transcript end'
+            ) | Set-Content -LiteralPath (Join-Path $stepDir 'console-stdout.txt') -Encoding UTF8
+
+            $status = Resolve-WingetterSandboxStepStatus -HandshakeDirectory $handshake -Step install
             $status.state | Should -Be 'completed'
             $status.exitCode | Should -Be 0
         } finally {
