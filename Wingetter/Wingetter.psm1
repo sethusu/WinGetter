@@ -45,6 +45,7 @@ Export-ModuleMember -Function @(
     'Write-WingetterSandboxTestReport'
     'Get-WingetterSandboxTestReportPath'
     'Get-WingetterSilentInstallPlan'
+    'Resolve-WingetterSandboxStepStatus'
     'Stop-WingetterSandboxSession'
     'Test-WingetterSandboxConfirmations'
     'Complete-WingetterSandboxTest'

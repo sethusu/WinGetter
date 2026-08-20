@@ -1,5 +1,5 @@
 @{
-    ModuleVersion     = '2.3.0'
+    ModuleVersion     = '2.4.0'
     GUID              = 'a3f8c2e1-9b4d-4f7a-8e6c-1d2b3a4c5e6f'
     Author            = 'Wingetter'
     CompanyName       = 'Wingetter'
@@ -34,6 +34,7 @@
         'Write-WingetterSandboxTestReport'
         'Get-WingetterSandboxTestReportPath'
         'Get-WingetterSilentInstallPlan'
+        'Resolve-WingetterSandboxStepStatus'
         'Stop-WingetterSandboxSession'
         'Test-WingetterSandboxConfirmations'
         'Complete-WingetterSandboxTest'

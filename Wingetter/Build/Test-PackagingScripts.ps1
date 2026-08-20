@@ -145,6 +145,7 @@ foreach ($needle in @(
         'Test-WingetterWindowsSandbox'
         'CopyReportButton'
         'Write-WingetterSandboxTestReport'
+        'Resolve-WingetterSandboxStepStatus'
     )) {
     if ($gui -notmatch [regex]::Escape($needle)) {
         $failures += "Gui\Start-WingetterGui.ps1 missing expected content: $needle"
@@ -166,6 +167,7 @@ foreach ($needle in @(
         'sandbox-failure.log'
         'Save-DesktopScreenshot'
         'ui-activity.json'
+        'Resolve-WingetterSandboxStepStatus'
     )) {
     if ($sandboxScript -notmatch [regex]::Escape($needle)) {
         $failures += "Private\Sandbox.ps1 missing expected content: $needle"
