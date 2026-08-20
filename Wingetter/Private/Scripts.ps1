@@ -330,6 +330,7 @@ Use this section when creating or reviewing the Win32 app in the Microsoft Intun
 | ``icon.png`` | Application icon for Intune upload (if available) |
 | ``silent-switches.json`` | Verified silent-install engine, switches, and command |
 | ``sandbox-test-report.txt`` | Chat-ready Windows Sandbox test log (created after Test in Sandbox) |
+| ``sandbox-failure.log`` | Sandbox failure summary written into the package folder |
 | ``wingetter-packaging.log`` | Packaging run log (created on failure) |
 
 ## Install Command (raw installer)

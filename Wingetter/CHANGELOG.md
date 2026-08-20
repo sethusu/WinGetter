@@ -12,13 +12,15 @@
 ### Silent install switches
 - Detects the installer engine from Winget `Installer Type`, then by probing the downloaded file (Inno, NSIS, WiX Burn, MSI, MSIX)
 - Verifies silent switches against that engine and writes `silent-switches.json`
-- Inno Setup (for example PrusaSlicer) now uses `/VERYSILENT /NORESTART /SUPPRESSMSGBOXES /SP-` instead of a generic `/S`, which is not silent for Inno
+- Inno Setup (for example PrusaSlicer) now uses `/VERYSILENT /NORESTART /SUPPRESSMSGBOXES /SP- /LANG=english`. Generic `/S` is not silent, and `/VERYSILENT` without `/LANG=` still shows Select Setup Language when the installer sets `ShowLanguageDialog=yes`.
 - Winget `Silent:` is used only when it is adequate for the engine; otherwise it is overridden and logged
 
 ### Sandbox test logs
 - The sandbox guest copies Intune Management Extension transcripts and script console output to the host after each step
 - Writes a chat-ready `sandbox-test-report.txt` in the package folder (also copied to the clipboard) so a failed silent install can be pasted into chat
 - **Copy report** in the Test in Sandbox dialog saves and copies the log before the sandbox shuts down
+- Sandbox watches for installer dialogs (language prompts, wizards). If one appears, it screenshots the desktop, stops the hung installer, and refuses to mark the package validated
+- Failures write `sandbox-failure.log` in the package folder (plus `sandbox-logs\`) so you can upload diagnostics
 
 ## Version 2.2.4 - 2026-08-19
 

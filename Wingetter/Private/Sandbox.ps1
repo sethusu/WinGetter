@@ -499,15 +499,24 @@ function Write-Status {
         [string]$Step,
         [string]$State,
         [object]$ExitCode = $null,
-        [string]$Message = ''
+        [string]$Message = '',
+        [object]$SilentUiDetected = $null,
+        [object]$SilentUiWindows = $null
     )
-    Write-GuestJson -Path $statusPath -Object @{
+    $payload = @{
         step = $Step
         state = $State
         exitCode = $ExitCode
         message = $Message
         updatedAt = (Get-Date).ToUniversalTime().ToString('o')
     }
+    if ($null -ne $SilentUiDetected) {
+        $payload.silentUiDetected = [bool]$SilentUiDetected
+    }
+    if ($SilentUiWindows) {
+        $payload.silentUiWindows = $SilentUiWindows
+    }
+    Write-GuestJson -Path $statusPath -Object $payload
 }
 
 function Read-CommandAction {
@@ -561,6 +570,65 @@ function Copy-PackageStepLogs {
     }
 }
 
+$uiIgnoreProcessNames = @(
+    'powershell', 'powershell_ise', 'pwsh', 'cmd', 'conhost', 'explorer',
+    'WindowsSandbox', 'WindowsSandboxClient', 'msedge', 'SearchHost', 'SearchUI',
+    'StartMenuExperienceHost', 'ShellExperienceHost', 'TextInputHost',
+    'ApplicationFrameHost', 'SystemSettings', 'dwm', 'sihost', 'ctfmon',
+    'RuntimeBroker', 'LockApp', 'WWAHost'
+)
+
+function Test-IgnoredUiProcess {
+    param([string]$ProcessName)
+    foreach ($name in $uiIgnoreProcessNames) {
+        if ([string]::Equals($name, $ProcessName, [StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+    }
+    return $false
+}
+
+function Get-InteractiveWindowSnapshot {
+    $snapshot = @{}
+    Get-Process -ErrorAction SilentlyContinue | ForEach-Object {
+        if ($_.MainWindowHandle -ne 0 -and $_.MainWindowHandle -ne [IntPtr]::Zero) {
+            $snapshot[$_.Id] = $true
+        }
+    }
+    return $snapshot
+}
+
+function Save-DesktopScreenshot {
+    param([string]$Path)
+    try {
+        Add-Type -AssemblyName System.Windows.Forms -ErrorAction Stop
+        Add-Type -AssemblyName System.Drawing -ErrorAction Stop
+        $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+        $bmp = New-Object System.Drawing.Bitmap $bounds.Width, $bounds.Height
+        $graphics = [System.Drawing.Graphics]::FromImage($bmp)
+        $graphics.CopyFromScreen($bounds.Location, [System.Drawing.Point]::Empty, $bounds.Size)
+        $directory = Split-Path -Path $Path -Parent
+        if ($directory -and -not (Test-Path -LiteralPath $directory)) {
+            New-Item -ItemType Directory -Path $directory -Force | Out-Null
+        }
+        $bmp.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
+        $graphics.Dispose()
+        $bmp.Dispose()
+        return $true
+    } catch {
+        Write-GuestLog "Could not capture screenshot: $_"
+        return $false
+    }
+}
+
+function Stop-ProcessTree {
+    param([int]$Id)
+    if ($Id -le 0) { return }
+    try {
+        & taskkill.exe /PID $Id /T /F | Out-Null
+    } catch { }
+}
+
 function Invoke-PackageStep {
     param(
         [ValidateSet('install', 'detect', 'uninstall')]
@@ -599,20 +667,110 @@ function Invoke-PackageStep {
     $stdoutPath = Join-Path $stepLogDir 'console-stdout.txt'
     $stderrPath = Join-Path $stepLogDir 'console-stderr.txt'
 
+    # New visible windows during a silent step mean the installer ignored its
+    # switches (for example Inno Setup Select Setup Language).
+    $windowBaseline = Get-InteractiveWindowSnapshot
+    $uiEvents = New-Object System.Collections.Generic.List[object]
+    $killedForUi = $false
+    $timedOut = $false
+    $uiDetectedAt = $null
+    $deadline = (Get-Date).AddMinutes(12)
+
     Set-Location -Path $packageRoot
-    $process = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $scriptPath) -Wait -PassThru -NoNewWindow -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+    $process = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $scriptPath) -PassThru -NoNewWindow -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+
+    while ($process -and -not $process.HasExited) {
+        Write-Heartbeat
+        if ((Get-Date) -gt $deadline) {
+            $timedOut = $true
+            Write-GuestLog "Timed out waiting for $scriptName after 12 minutes. Stopping the process tree."
+            Stop-ProcessTree -Id $process.Id
+            break
+        }
+
+        Get-Process -ErrorAction SilentlyContinue | ForEach-Object {
+            if ($_.MainWindowHandle -eq 0 -or $_.MainWindowHandle -eq [IntPtr]::Zero) { return }
+            if ($windowBaseline.ContainsKey($_.Id)) { return }
+            if (Test-IgnoredUiProcess -ProcessName $_.ProcessName) { return }
+            foreach ($existing in $uiEvents) {
+                if ($existing.processId -eq $_.Id) { return }
+            }
+
+            $title = [string]$_.MainWindowTitle
+            if ([string]::IsNullOrWhiteSpace($title)) {
+                $title = '(visible window, no title)'
+            }
+            $uiEvents.Add(@{
+                processName = $_.ProcessName
+                windowTitle = $title
+                processId = $_.Id
+                detectedAt = (Get-Date).ToUniversalTime().ToString('o')
+            }) | Out-Null
+            if (-not $uiDetectedAt) {
+                $uiDetectedAt = Get-Date
+                $shotPath = Join-Path $stepLogDir 'ui-detected.png'
+                if (Save-DesktopScreenshot -Path $shotPath) {
+                    Write-GuestLog "Saved UI screenshot to $shotPath"
+                }
+            }
+            Write-GuestLog ("WARNING: interactive window detected during {0}: '{1}' ({2}). The step is not silent." -f $Step, $title, $_.ProcessName)
+            Write-Status -Step $Step -State 'running' -Message ("NOT SILENT: interactive window '{0}' ({1}). Capturing diagnostics, then stopping the installer." -f $title, $_.ProcessName) -SilentUiDetected $true -SilentUiWindows @($uiEvents)
+        }
+
+        if ($uiDetectedAt -and -not $killedForUi) {
+            $waited = ((Get-Date) - $uiDetectedAt).TotalSeconds
+            if ($waited -ge 12) {
+                $killedForUi = $true
+                Write-GuestLog "Stopping $scriptName because an interactive window blocked a silent install."
+                Stop-ProcessTree -Id $process.Id
+                break
+            }
+        }
+
+        Start-Sleep -Seconds 1
+    }
+
+    if ($process -and -not $process.HasExited) {
+        try { $process.WaitForExit(20000) | Out-Null } catch { }
+    }
+    if ($process -and -not $process.HasExited) {
+        Stop-ProcessTree -Id $process.Id
+        try { $process.WaitForExit(5000) | Out-Null } catch { }
+    }
+
     $exitCode = 1
-    if ($process -and $null -ne $process.ExitCode) {
+    if ($killedForUi) {
+        $exitCode = 1603
+    } elseif ($timedOut) {
+        $exitCode = 1603
+    } elseif ($process -and $null -ne $process.ExitCode) {
         $exitCode = [int]$process.ExitCode
+    }
+
+    $silentUi = ($uiEvents.Count -gt 0)
+    if ($silentUi) {
+        Write-GuestJson -Path (Join-Path $stepLogDir 'ui-activity.json') -Object @{
+            step = $Step
+            notSilent = $true
+            killedForUi = $killedForUi
+            timedOut = $timedOut
+            events = @($uiEvents)
+        }
     }
 
     Copy-PackageStepLogs -Step $Step -ExitCode $exitCode -StdoutPath $stdoutPath -StderrPath $stderrPath
 
     $message = "$scriptName finished with exit code $exitCode."
+    if ($silentUi) {
+        $titles = @($uiEvents | ForEach-Object { $_.windowTitle }) -join '; '
+        $message = "$scriptName was not silent. Interactive window(s): $titles. Exit code $exitCode. Screenshot and logs were copied for diagnostics."
+    } elseif ($timedOut) {
+        $message = "$scriptName timed out after 12 minutes and was stopped. Exit code $exitCode."
+    }
     Write-GuestLog $message
     Write-Host $message
     Write-Host 'Waiting for confirmation in Wingetter...'
-    Write-Status -Step $Step -State 'completed' -ExitCode ([int]$exitCode) -Message $message
+    Write-Status -Step $Step -State 'completed' -ExitCode ([int]$exitCode) -Message $message -SilentUiDetected $silentUi -SilentUiWindows @($uiEvents)
 }
 
 $deadline = (Get-Date).AddMinutes(2)
@@ -1112,7 +1270,8 @@ function Write-WingetterSandboxTestReport {
         $exitCode = if ($item) { Get-ConfirmationValue -Item $item -Name 'ExitCode' } else { $null }
         $stepMessage = if ($item) { Get-ConfirmationValue -Item $item -Name 'Message' } else { $null }
         $confirmedAt = if ($item) { Get-ConfirmationValue -Item $item -Name 'ConfirmedAt' } else { $null }
-        [void]$builder.AppendLine(('{0}: confirmed={1}; exitCode={2}; at={3}; message={4}' -f $step, $confirmed, $exitCode, $confirmedAt, $stepMessage))
+        $silentUi = if ($item) { Get-ConfirmationValue -Item $item -Name 'SilentUiDetected' } else { $null }
+        [void]$builder.AppendLine(('{0}: confirmed={1}; exitCode={2}; silentUi={3}; at={4}; message={5}' -f $step, $confirmed, $exitCode, $silentUi, $confirmedAt, $stepMessage))
     }
     [void]$builder.AppendLine('')
 
@@ -1171,6 +1330,7 @@ function Write-WingetterSandboxTestReport {
 
         $preferred = @(
             (Join-Path $stepDir 'step.json')
+            (Join-Path $stepDir 'ui-activity.json')
             (Join-Path $stepDir 'console-stdout.txt')
             (Join-Path $stepDir 'console-stderr.txt')
         )
@@ -1196,12 +1356,125 @@ function Write-WingetterSandboxTestReport {
     $reportPath = Get-WingetterSandboxTestReportPath -VersionDirectory $VersionDirectory
     Set-Content -LiteralPath $reportPath -Value $text -Encoding UTF8
 
+    $failureLog = Write-WingetterSandboxFailureLog `
+        -VersionDirectory $VersionDirectory `
+        -ReportText $text `
+        -Outcome $Outcome `
+        -Message $Message `
+        -Confirmations $Confirmations `
+        -PackageInfo $info `
+        -CopiedLogsPath $copiedLogs `
+        -HandshakeDirectory $HandshakeDirectory
+
     return [PSCustomObject]@{
         Path              = $reportPath
         Text              = $text
         CopiedLogsPath    = $copiedLogs
+        FailureLogPath    = $failureLog
         Outcome           = $Outcome
     }
+}
+
+function Get-WingetterSandboxFailureLogPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$VersionDirectory
+    )
+
+    return (Join-Path $VersionDirectory 'sandbox-failure.log')
+}
+
+function Write-WingetterSandboxFailureLog {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$VersionDirectory,
+        [string]$ReportText,
+        [string]$Outcome,
+        [string]$Message,
+        [hashtable]$Confirmations,
+        $PackageInfo,
+        [string]$CopiedLogsPath,
+        [string]$HandshakeDirectory
+    )
+
+    $failed = $Outcome -ne 'validated'
+    $silentUi = $false
+    $uiTitles = @()
+    if ($Confirmations -and $Confirmations.ContainsKey('install')) {
+        $silentUi = [bool](Get-ConfirmationValue -Item $Confirmations['install'] -Name 'SilentUiDetected')
+    }
+
+    $uiActivity = $null
+    foreach ($root in @($HandshakeDirectory, $CopiedLogsPath)) {
+        if (-not $root) { continue }
+        $candidate = Join-Path (Join-Path (Join-Path $root 'logs') 'install') 'ui-activity.json'
+        if (-not (Test-Path -LiteralPath $candidate)) {
+            $candidate = Join-Path (Join-Path (Join-Path $root 'steps') 'install') 'ui-activity.json'
+        }
+        if (Test-Path -LiteralPath $candidate) {
+            try {
+                $uiActivity = Get-Content -LiteralPath $candidate -Raw | ConvertFrom-Json
+                $silentUi = $true
+                if ($uiActivity.events) {
+                    $uiTitles = @($uiActivity.events | ForEach-Object { $_.windowTitle })
+                }
+            } catch { }
+            break
+        }
+    }
+
+    if (-not $failed -and -not $silentUi) {
+        $existing = Get-WingetterSandboxFailureLogPath -VersionDirectory $VersionDirectory
+        if (Test-Path -LiteralPath $existing) {
+            Remove-Item -LiteralPath $existing -Force -ErrorAction SilentlyContinue
+        }
+        return $null
+    }
+
+    $displayName = if ($PackageInfo -and $PackageInfo.DisplayName) { $PackageInfo.DisplayName } else { '' }
+    $packageId = if ($PackageInfo -and $PackageInfo.PackageId) { $PackageInfo.PackageId } else { '' }
+    $version = if ($PackageInfo -and $PackageInfo.Version) { $PackageInfo.Version } else { '' }
+
+    $why = $Message
+    if ($silentUi) {
+        $titleText = if ($uiTitles.Count -gt 0) { ($uiTitles -join '; ') } else { 'an installer dialog' }
+        $why = "Install was not silent. Windows Sandbox showed interactive UI ($titleText). Intune Win32 installs cannot click through that dialog."
+        if ($Message) {
+            $why = "$why $Message"
+        }
+    } elseif (-not $why) {
+        $why = "Sandbox test outcome: $Outcome"
+    }
+
+    $lines = New-Object System.Collections.Generic.List[string]
+    $lines.Add('Wingetter sandbox failure') | Out-Null
+    $lines.Add(('Generated (UTC): {0}' -f (Get-Date).ToUniversalTime().ToString('o'))) | Out-Null
+    $lines.Add(('Package: {0} ({1}) {2}' -f $displayName, $packageId, $version)) | Out-Null
+    $lines.Add(('Package folder: {0}' -f $VersionDirectory)) | Out-Null
+    $lines.Add(('What failed: {0}' -f $why)) | Out-Null
+    if ($silentUi) {
+        $lines.Add('Silent UI: yes. Re-package so install.ps1 uses Inno /VERYSILENT /LANG=english, then re-test.') | Out-Null
+    }
+    $lines.Add('') | Out-Null
+    $lines.Add('Upload this file together with sandbox-test-report.txt and the sandbox-logs folder.') | Out-Null
+    $lines.Add('') | Out-Null
+    if ($ReportText) {
+        $lines.Add('--- Full report ---') | Out-Null
+        $lines.Add($ReportText) | Out-Null
+    }
+
+    $failurePath = Get-WingetterSandboxFailureLogPath -VersionDirectory $VersionDirectory
+    Set-Content -LiteralPath $failurePath -Value ($lines -join "`r`n") -Encoding UTF8
+
+    if ($CopiedLogsPath -and (Test-Path -LiteralPath $CopiedLogsPath)) {
+        Copy-Item -LiteralPath $failurePath -Destination (Join-Path $CopiedLogsPath 'sandbox-failure.log') -Force -ErrorAction SilentlyContinue
+        $reportPath = Get-WingetterSandboxTestReportPath -VersionDirectory $VersionDirectory
+        if (Test-Path -LiteralPath $reportPath) {
+            Copy-Item -LiteralPath $reportPath -Destination (Join-Path $CopiedLogsPath 'sandbox-test-report.txt') -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    return $failurePath
 }
 
 function Stop-WingetterSandboxSession {
@@ -1257,6 +1530,10 @@ function Test-WingetterSandboxConfirmations {
         }
     }
 
+    if ([bool](Get-ConfirmationValue -Item $Confirmations['install'] -Name 'SilentUiDetected')) {
+        return $false
+    }
+
     return $true
 }
 
@@ -1269,10 +1546,11 @@ function ConvertTo-SandboxStepRecord {
     }
 
     return [ordered]@{
-        confirmed   = [bool](Get-ConfirmationValue -Item $Item -Name 'Confirmed')
-        exitCode    = (Get-ConfirmationValue -Item $Item -Name 'ExitCode')
-        confirmedAt = $confirmedAt
-        message     = [string](Get-ConfirmationValue -Item $Item -Name 'Message')
+        confirmed         = [bool](Get-ConfirmationValue -Item $Item -Name 'Confirmed')
+        exitCode          = (Get-ConfirmationValue -Item $Item -Name 'ExitCode')
+        confirmedAt       = $confirmedAt
+        message           = [string](Get-ConfirmationValue -Item $Item -Name 'Message')
+        silentUiDetected  = [bool](Get-ConfirmationValue -Item $Item -Name 'SilentUiDetected')
     }
 }
 

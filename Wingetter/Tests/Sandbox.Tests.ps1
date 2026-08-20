@@ -70,6 +70,9 @@ Describe 'New-WingetterSandboxGuestScript' {
             $script | Should -Match 'Copy-PackageStepLogs'
             $script | Should -Match 'console-stdout.txt'
             $script | Should -Match 'IntuneManagementExtension\\Logs'
+            $script | Should -Match 'Save-DesktopScreenshot'
+            $script | Should -Match 'ui-activity.json'
+            $script | Should -Match 'interactive window'
         }
     }
 }
@@ -220,6 +223,20 @@ Describe 'Test-WingetterSandboxConfirmations and Complete-WingetterSandboxTest' 
         Test-WingetterSandboxConfirmations -Confirmations $complete | Should -Be $true
     }
 
+    It 'Does not treat a UI language dialog as a successful silent install' {
+        $uiShown = @{
+            install = @{ Confirmed = $true; ExitCode = 1603; SilentUiDetected = $true; Message = 'Select Setup Language' }
+            detect = @{ Confirmed = $true; ExitCode = 0 }
+            uninstall = @{ Confirmed = $true; ExitCode = 0 }
+        }
+        Test-WingetterSandboxConfirmations -Confirmations $uiShown | Should -Be $false
+
+        $result = Complete-WingetterSandboxTest -VersionDirectory $script:validationDir -Confirmations $uiShown
+        $result.Validated | Should -Be $false
+        $app = Get-Content -LiteralPath (Join-Path $script:validationDir 'app.json') -Raw | ConvertFrom-Json
+        $app.sandboxValidated | Should -Be $false
+    }
+
     It 'Marks the package validated only when all three steps are confirmed' {
         $allConfirmed = @{
             install = @{ Confirmed = $true; ExitCode = 0; Message = 'installed' }
@@ -299,6 +316,8 @@ Describe 'Write-WingetterSandboxTestReport' {
             $report.Text | Should -Match 'Install failed with exit code 1'
             Test-Path -LiteralPath (Join-Path $temp 'sandbox-logs') | Should -Be $true
             Test-Path -LiteralPath (Join-Path (Join-Path $temp 'sandbox-logs') 'guest.log') | Should -Be $true
+            Test-Path -LiteralPath (Join-Path $temp 'sandbox-failure.log') | Should -Be $true
+            (Get-Content -LiteralPath (Join-Path $temp 'sandbox-failure.log') -Raw) | Should -Match 'What failed'
         } finally {
             Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue
             Remove-Item -LiteralPath $handshake -Recurse -Force -ErrorAction SilentlyContinue

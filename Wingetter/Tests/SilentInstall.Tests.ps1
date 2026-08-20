@@ -25,9 +25,17 @@ Describe 'Test-WingetterSilentSwitchAdequacy' {
         $result.Reason | Should -Match 'Inno'
     }
 
-    It 'Accepts /VERYSILENT for Inno Setup' {
+    It 'Rejects /VERYSILENT without /LANG for Inno Setup' {
         $result = InModuleScope Wingetter {
             Test-WingetterSilentSwitchAdequacy -Engine 'inno' -SwitchText '/VERYSILENT /NORESTART'
+        }
+        $result.Adequate | Should -Be $false
+        $result.Reason | Should -Match 'LANG'
+    }
+
+    It 'Accepts /VERYSILENT with /LANG for Inno Setup' {
+        $result = InModuleScope Wingetter {
+            Test-WingetterSilentSwitchAdequacy -Engine 'inno' -SwitchText '/VERYSILENT /NORESTART /LANG=english'
         }
         $result.Adequate | Should -Be $true
     }
@@ -78,16 +86,24 @@ Describe 'Get-WingetterSilentInstallPlan' {
         $plan.Verified | Should -Be $true
         $plan.Command | Should -Match '/VERYSILENT'
         $plan.Command | Should -Not -Match '(?i)(?<!VERY)/SILENT'
-        $plan.Command | Should -Be '"PrusaSlicer.exe" /VERYSILENT /NORESTART /SUPPRESSMSGBOXES /SP-'
+        $plan.Command | Should -Be '"PrusaSlicer.exe" /VERYSILENT /NORESTART /SUPPRESSMSGBOXES /SP- /LANG=english'
     }
 
     It 'Keeps a Winget Silent switch that is already adequate for Inno' {
         $plan = Get-WingetterSilentInstallPlan -InstallerFileName 'Setup.exe' -InstallerExtension '.exe' `
-            -InstallerType 'inno' -SilentSwitch '/VERYSILENT /SUPPRESSMSGBOXES'
+            -InstallerType 'inno' -SilentSwitch '/VERYSILENT /SUPPRESSMSGBOXES /LANG=english'
         $plan.Overridden | Should -Be $false
         $plan.ArgumentSource | Should -Be 'winget-silent'
         $plan.Command | Should -Match '/VERYSILENT'
         $plan.Command | Should -Match '/NORESTART'
+    }
+
+    It 'Adds /LANG=english when Winget Silent is /VERYSILENT without a language' {
+        $plan = Get-WingetterSilentInstallPlan -InstallerFileName 'Setup.exe' -InstallerExtension '.exe' `
+            -InstallerType 'inno' -SilentSwitch '/VERYSILENT /SUPPRESSMSGBOXES'
+        $plan.ArgumentSource | Should -Be 'winget-silent-plus-lang'
+        $plan.Verified | Should -Be $true
+        $plan.Command | Should -Match '/LANG=english'
     }
 
     It 'Uses /S for NSIS' {
@@ -106,6 +122,7 @@ Describe 'Get-WingetterSilentInstallPlan' {
             $plan.Engine | Should -Be 'inno'
             $plan.EngineSource | Should -Be 'file-probe'
             $plan.Command | Should -Match '/VERYSILENT'
+            $plan.Command | Should -Match '/LANG=english'
         } finally {
             Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
         }

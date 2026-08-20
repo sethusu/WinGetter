@@ -163,6 +163,9 @@ foreach ($needle in @(
         'uninstall.ps1'
         'Copy-PackageStepLogs'
         'sandbox-test-report'
+        'sandbox-failure.log'
+        'Save-DesktopScreenshot'
+        'ui-activity.json'
     )) {
     if ($sandboxScript -notmatch [regex]::Escape($needle)) {
         $failures += "Private\Sandbox.ps1 missing expected content: $needle"
@@ -177,6 +180,7 @@ if (-not (Test-Path -LiteralPath $silentScript)) {
     foreach ($needle in @(
             'Get-WingetterSilentInstallPlan'
             '/VERYSILENT'
+            '/LANG=english'
             'Test-WingetterSilentSwitchAdequacy'
         )) {
         if ($silentText -notmatch [regex]::Escape($needle)) {

@@ -29,6 +29,18 @@ function Test-WingetterSwitchHasToken {
     return $false
 }
 
+function Test-WingetterSwitchHasLang {
+    param([string]$SwitchText)
+
+    foreach ($item in (ConvertTo-WingetterSwitchTokenList -Value $SwitchText)) {
+        if ($item -like '/LANG=*') {
+            return $true
+        }
+    }
+
+    return $false
+}
+
 function Resolve-WingetterInstallerEngineName {
     param([string]$Value)
 
@@ -180,7 +192,7 @@ function Get-WingetterDefaultSilentArguments {
     param([string]$Engine)
 
     switch ($Engine) {
-        'inno' { return '/VERYSILENT /NORESTART /SUPPRESSMSGBOXES /SP-' }
+        'inno' { return '/VERYSILENT /NORESTART /SUPPRESSMSGBOXES /SP- /LANG=english' }
         'nsis' { return '/S' }
         'msi' { return '/quiet /norestart' }
         'burn' { return '/quiet /norestart' }
@@ -209,21 +221,29 @@ function Test-WingetterSilentSwitchAdequacy {
             }
         }
         'inno' {
-            if (Test-WingetterSwitchHasToken -SwitchText $text -Token '/VERYSILENT') {
-                return [PSCustomObject]@{
-                    Adequate = $true
-                    Reason   = 'Inno Setup /VERYSILENT is fully silent.'
-                }
-            }
-            if (Test-WingetterSwitchHasToken -SwitchText $text -Token '/SILENT') {
+            $hasSilent = Test-WingetterSwitchHasToken -SwitchText $text -Token '/SILENT'
+            $hasVerySilent = Test-WingetterSwitchHasToken -SwitchText $text -Token '/VERYSILENT'
+            if ($hasSilent -and -not $hasVerySilent) {
                 return [PSCustomObject]@{
                     Adequate = $false
                     Reason   = 'Inno Setup /SILENT still shows a progress wizard. Intune/sandbox installs need /VERYSILENT.'
                 }
             }
+            if (-not $hasVerySilent) {
+                return [PSCustomObject]@{
+                    Adequate = $false
+                    Reason   = 'Inno Setup ignores a generic /S switch and typically shows UI or fails in a sandbox.'
+                }
+            }
+            if (-not (Test-WingetterSwitchHasLang -SwitchText $text)) {
+                return [PSCustomObject]@{
+                    Adequate = $false
+                    Reason   = 'Inno Setup with ShowLanguageDialog=yes still shows Select Setup Language under /VERYSILENT unless /LANG= is set (PrusaSlicer does this).'
+                }
+            }
             return [PSCustomObject]@{
-                Adequate = $false
-                Reason   = 'Inno Setup ignores a generic /S switch and typically shows UI or fails in a sandbox.'
+                Adequate = $true
+                Reason   = 'Inno Setup /VERYSILENT /LANG is fully silent.'
             }
         }
         'nsis' {
@@ -392,6 +412,17 @@ function Get-WingetterSilentInstallPlan {
             if ($engine -eq 'msi' -and -not (Test-WingetterSwitchHasToken -SwitchText $arguments -Token '/norestart')) {
                 $arguments = ($arguments.Trim() + ' /norestart').Trim()
             }
+        } elseif (
+            $engine -eq 'inno' -and
+            (Test-WingetterSwitchHasToken -SwitchText $wingetSwitch -Token '/VERYSILENT') -and
+            (-not (Test-WingetterSwitchHasLang -SwitchText $wingetSwitch))
+        ) {
+            $arguments = ($wingetSwitch.Trim() + ' /LANG=english').Trim()
+            $argumentSource = 'winget-silent-plus-lang'
+            $warnings.Add('Added /LANG=english. Inno Setup still shows Select Setup Language under /VERYSILENT when ShowLanguageDialog=yes unless /LANG is set.') | Out-Null
+            if (-not (Test-WingetterSwitchHasToken -SwitchText $arguments -Token '/NORESTART')) {
+                $arguments = ($arguments.Trim() + ' /NORESTART').Trim()
+            }
         } else {
             $overridden = $true
             $overrideReason = $wingetCheck.Reason
@@ -399,6 +430,11 @@ function Get-WingetterSilentInstallPlan {
             $argumentSource = 'engine-default-override'
             $warnings.Add("Winget Silent switch '$wingetSwitch' was rejected for engine '$engine'. $($wingetCheck.Reason)") | Out-Null
         }
+    }
+
+    if ($engine -eq 'inno' -and -not (Test-WingetterSwitchHasLang -SwitchText $arguments)) {
+        $arguments = ($arguments.Trim() + ' /LANG=english').Trim()
+        $warnings.Add('Added /LANG=english so Inno Setup does not show the language dialog.') | Out-Null
     }
 
     $finalCheck = Test-WingetterSilentSwitchAdequacy -Engine $engine -SwitchText $arguments

@@ -373,6 +373,7 @@ function Complete-SandboxDialog {
         ReportPath = if ($report) { $report.Path } else { $null }
         ReportText = if ($report) { $report.Text } else { $null }
         ReportCopied = $copied
+        FailureLogPath = if ($report) { $report.FailureLogPath } else { $null }
     }
 
     if ($script:sandboxDialog.Timer) {
@@ -402,9 +403,16 @@ function Confirm-CurrentSandboxStep {
     $status = Get-WingetterSandboxStatus -HandshakeDirectory $ui.Session.HandshakeDirectory
     $exitCode = $null
     $message = ''
+    $silentUi = $false
     if ($status) {
         $exitCode = $status.exitCode
         $message = [string]$status.message
+        if ($status.PSObject.Properties['silentUiDetected']) {
+            $silentUi = [bool]$status.silentUiDetected
+        }
+    }
+    if (-not $silentUi -and $message -match '(?i)not silent') {
+        $silentUi = $true
     }
 
     if ($Succeeded) {
@@ -413,9 +421,14 @@ function Confirm-CurrentSandboxStep {
             ExitCode = $exitCode
             ConfirmedAt = (Get-Date).ToUniversalTime().ToString('o')
             Message = $message
+            SilentUiDetected = $silentUi
         }
         $ui.StepStates[$step] = 'Confirmed'
-        $ui.StepDetails[$step] = "Confirmed. Exit code: $exitCode"
+        $ui.StepDetails[$step] = if ($silentUi) {
+            "Confirmed, but NOT SILENT. Exit code: $exitCode"
+        } else {
+            "Confirmed. Exit code: $exitCode"
+        }
         $ui.ConfirmButton.IsEnabled = $false
         $ui.FailButton.IsEnabled = $false
 
@@ -430,7 +443,13 @@ function Confirm-CurrentSandboxStep {
             Update-SandboxDialogStepList
         } else {
             $validation = Complete-WingetterSandboxTest -VersionDirectory $ui.Session.VersionDirectory -Confirmations $ui.Confirmations
-            Complete-SandboxDialog -Validated $true -Validation $validation -Message 'All three steps were confirmed. This package is marked as validated.'
+            $ok = [bool]$validation.Validated
+            $doneMessage = if ($ok) {
+                'All three steps were confirmed. This package is marked as validated.'
+            } else {
+                'All three steps were confirmed, but silent-install validation failed (an installer dialog appeared). The package was not marked as validated. See sandbox-failure.log in the package folder.'
+            }
+            Complete-SandboxDialog -Validated $ok -Validation $validation -Message $doneMessage
         }
         return
     }
@@ -440,6 +459,7 @@ function Confirm-CurrentSandboxStep {
         ExitCode = $exitCode
         ConfirmedAt = (Get-Date).ToUniversalTime().ToString('o')
         Message = $message
+        SilentUiDetected = $silentUi
     }
     $ui.StepStates[$step] = 'Failed'
     $ui.StepDetails[$step] = "Not confirmed. Exit code: $exitCode"
@@ -486,8 +506,19 @@ function Update-SandboxDialogFromStatus {
     } elseif ($statusStep -eq $step -and ($state -eq 'completed' -or $state -eq 'failed')) {
         $ui.StepStates[$step] = 'Awaiting'
         $exitLabel = if ($null -ne $status.exitCode) { "Exit code: $($status.exitCode). " } else { '' }
+        $silentUi = $false
+        if ($status.PSObject.Properties['silentUiDetected']) {
+            $silentUi = [bool]$status.silentUiDetected
+        }
+        if (-not $silentUi -and [string]$status.message -match '(?i)not silent') {
+            $silentUi = $true
+        }
         $ui.StepDetails[$step] = "$exitLabel$($status.message) Confirm this step in Wingetter to continue."
-        $ui.StatusText.Text = "Confirm $step, then the next script will run."
+        if ($silentUi) {
+            $ui.StatusText.Text = "NOT SILENT: an installer dialog appeared. Use Step failed, or confirm to continue testing. The package will not be marked validated."
+        } else {
+            $ui.StatusText.Text = "Confirm $step, then the next script will run."
+        }
         $ui.ConfirmButton.IsEnabled = $true
         $ui.FailButton.IsEnabled = $true
     }
@@ -547,9 +578,9 @@ function Show-WingetterSandboxTestDialog {
             uninstall = 'Pending'
         }
         Confirmations = @{
-            install = @{ Confirmed = $false; ExitCode = $null; ConfirmedAt = $null; Message = '' }
-            detect = @{ Confirmed = $false; ExitCode = $null; ConfirmedAt = $null; Message = '' }
-            uninstall = @{ Confirmed = $false; ExitCode = $null; ConfirmedAt = $null; Message = '' }
+            install = @{ Confirmed = $false; ExitCode = $null; ConfirmedAt = $null; Message = ''; SilentUiDetected = $false }
+            detect = @{ Confirmed = $false; ExitCode = $null; ConfirmedAt = $null; Message = ''; SilentUiDetected = $false }
+            uninstall = @{ Confirmed = $false; ExitCode = $null; ConfirmedAt = $null; Message = ''; SilentUiDetected = $false }
         }
         HeartbeatSeen = $false
         Finished = $false
@@ -1168,8 +1199,14 @@ function Invoke-WingetterSandboxTestFromUi {
         if ($result -and $result.ReportPath) {
             Add-LogLine -LogControl $logText -Message "Sandbox report: $($result.ReportPath)"
         }
+        if ($result -and $result.FailureLogPath) {
+            Add-LogLine -LogControl $logText -Message "Sandbox failure log: $($result.FailureLogPath)"
+        }
 
         $dialogMessage = if ($result -and $result.Message) { [string]$result.Message } else { '' }
+        if ($result -and $result.FailureLogPath) {
+            $dialogMessage = "$dialogMessage`n`nFailure log (upload this for diagnostics):`n$($result.FailureLogPath)"
+        }
         if ($result -and $result.ReportPath) {
             $dialogMessage = "$dialogMessage`n`nA chat-ready log was saved to:`n$($result.ReportPath)"
             if ($result.ReportCopied) {
