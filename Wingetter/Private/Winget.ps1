@@ -831,6 +831,21 @@ function Invoke-WingetShowForPackageDetails {
     return Invoke-WingetCli -Command show -Arguments $showArguments
 }
 
+function Get-WingetSilentSwitchFromShowText {
+    param([string]$Text)
+
+    if ([string]::IsNullOrWhiteSpace($Text)) {
+        return ''
+    }
+
+    $match = [regex]::Match($Text, '(?im)^\s*Silent:\s+(\S.*)$')
+    if ($match.Success) {
+        return $match.Groups[1].Value.Trim()
+    }
+
+    return ''
+}
+
 function Get-WingetPackageDetails {
     [CmdletBinding()]
     param(
@@ -918,6 +933,8 @@ function Get-WingetPackageDetails {
         $installerType = ($text | Select-String -Pattern 'Installer Type:\s+(.+)' | Select-Object -First 1).Matches.Groups[1].Value.Trim()
     }
 
+    $silentSwitch = Get-WingetSilentSwitchFromShowText -Text $text
+
     if (-not $foundVersion) {
         throw 'Could not determine version from Winget output.'
     }
@@ -934,6 +951,7 @@ function Get-WingetPackageDetails {
         Description = $description
         Homepage = $homepage
         InstallerType = $installerType
+        SilentSwitch = $silentSwitch
         Source = $packageSource
         RawOutput = $appInfo
     }

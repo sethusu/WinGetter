@@ -150,15 +150,20 @@ function Start-WingetInstallerDownload {
 function Get-InstallerInstallCommand {
     param(
         [string]$InstallerFileName,
-        [string]$InstallerExtension
+        [string]$InstallerExtension,
+        [string]$InstallerPath,
+        [string]$InstallerType,
+        [string]$SilentSwitch
     )
 
-    switch ($InstallerExtension.ToLower()) {
-        '.msi' { return "msiexec /i `"$InstallerFileName`" /quiet /norestart" }
-        '.msix' { return "Add-AppxPackage -Path `"$InstallerFileName`"" }
-        '.appx' { return "Add-AppxPackage -Path `"$InstallerFileName`"" }
-        default { return "`"$InstallerFileName`" /S" }
-    }
+    $plan = Get-WingetterSilentInstallPlan `
+        -InstallerFileName $InstallerFileName `
+        -InstallerExtension $InstallerExtension `
+        -InstallerPath $InstallerPath `
+        -InstallerType $InstallerType `
+        -SilentSwitch $SilentSwitch
+
+    return $plan.Command
 }
 
 function Get-IntuneUninstallCommandLine {

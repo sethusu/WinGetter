@@ -143,6 +143,9 @@ foreach ($needle in @(
         'Show-WingetterSandboxTestDialog'
         'Invoke-WingetterSandboxTestFromUi'
         'Test-WingetterWindowsSandbox'
+        'CopyReportButton'
+        'Write-WingetterSandboxTestReport'
+        'Resolve-WingetterSandboxStepStatus'
     )) {
     if ($gui -notmatch [regex]::Escape($needle)) {
         $failures += "Gui\Start-WingetterGui.ps1 missing expected content: $needle"
@@ -159,9 +162,32 @@ foreach ($needle in @(
         'install.ps1'
         'detection.ps1'
         'uninstall.ps1'
+        'Copy-PackageStepLogs'
+        'sandbox-test-report'
+        'sandbox-failure.log'
+        'Save-DesktopScreenshot'
+        'ui-activity.json'
+        'Resolve-WingetterSandboxStepStatus'
     )) {
     if ($sandboxScript -notmatch [regex]::Escape($needle)) {
         $failures += "Private\Sandbox.ps1 missing expected content: $needle"
+    }
+}
+
+$silentScript = Join-Path $privateDir 'SilentInstall.ps1'
+if (-not (Test-Path -LiteralPath $silentScript)) {
+    $failures += 'Missing required file: Private\SilentInstall.ps1'
+} else {
+    $silentText = Get-Content -LiteralPath $silentScript -Raw
+    foreach ($needle in @(
+            'Get-WingetterSilentInstallPlan'
+            '/VERYSILENT'
+            '/LANG=english'
+            'Test-WingetterSilentSwitchAdequacy'
+        )) {
+        if ($silentText -notmatch [regex]::Escape($needle)) {
+            $failures += "Private\SilentInstall.ps1 missing expected content: $needle"
+        }
     }
 }
 

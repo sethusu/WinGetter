@@ -52,7 +52,22 @@ function Invoke-WingetterPackaging {
             throw 'Could not find downloaded installer file (.exe, .msi, .msix, or .appx).'
         }
 
-        $installerInstallCommand = Get-InstallerInstallCommand -InstallerFileName $installerFile.Name -InstallerExtension $installerFile.Extension
+        $silentPlan = Get-WingetterSilentInstallPlan `
+            -InstallerFileName $installerFile.Name `
+            -InstallerExtension $installerFile.Extension `
+            -InstallerPath $installerFile.FullName `
+            -InstallerType $details.InstallerType `
+            -SilentSwitch $details.SilentSwitch
+        $installerInstallCommand = $silentPlan.Command
+        Write-WingetterSilentSwitchManifest -Path (Join-Path $versionDirectory 'silent-switches.json') -Plan $silentPlan
+        if ($silentPlan.Overridden) {
+            Write-WingetterLog -Message "Silent switch override ($($silentPlan.Engine)): $($silentPlan.OverrideReason)" -Level Warning -OnProgress $OnProgress
+        }
+        foreach ($warning in @($silentPlan.Warnings)) {
+            if ($warning) {
+                Write-WingetterLog -Message $warning -Level Warning -OnProgress $OnProgress
+            }
+        }
 
         Write-WingetterProgress -Step 4 -TotalSteps $totalSteps -StepName 'Calculating hash' -Percent 35 -Message $installerFile.Name -OnProgress $OnProgress
         $installerHash = (Get-FileHash -Path $installerFile.FullName -Algorithm SHA256).Hash
@@ -64,7 +79,7 @@ function Invoke-WingetterPackaging {
         $detectionScript = New-WingetterDetectionScript -PackageId $details.PackageId -DisplayName $details.DisplayName -Version $details.Version
 
         Write-WingetterProgress -Step 7 -TotalSteps $totalSteps -StepName 'Generating uninstall.ps1' -Percent 65 -OnProgress $OnProgress
-        $uninstallScript = New-WingetterUninstallScript -PackageId $details.PackageId -DisplayName $details.DisplayName
+        $uninstallScript = New-WingetterUninstallScript -PackageId $details.PackageId -DisplayName $details.DisplayName -InstallerEngine $silentPlan.Engine
 
         Write-WingetterProgress -Step 8 -TotalSteps $totalSteps -StepName 'Resolving icon' -Percent 72 -OnProgress $OnProgress
         $iconFilePath = Join-Path $versionDirectory 'icon.png'
@@ -98,7 +113,8 @@ function Invoke-WingetterPackaging {
         $metadata = New-WingetterMetadataFiles -PackageDetails $details -VersionDirectory $versionDirectory `
             -InstallerFileName $installerFile.Name -InstallerHash $installerHash `
             -InstallerInstallCommand $installerInstallCommand -DetectionScript $detectionScript `
-            -InstallScript $installScript -UninstallScript $uninstallScript -IconFilePath $iconFilePath
+            -InstallScript $installScript -UninstallScript $uninstallScript -IconFilePath $iconFilePath `
+            -SilentInstallPlan $silentPlan
 
         Write-WingetterProgress -Step 10 -TotalSteps $totalSteps -StepName 'Packaging .intunewin' -Percent 88 -OnProgress $OnProgress
         $contentPrepPath = Resolve-ContentPrepToolPath

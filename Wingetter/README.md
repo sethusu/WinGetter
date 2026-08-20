@@ -100,6 +100,10 @@ Or launch via the main script with no parameters:
         ├── app.json
         ├── win32LobApp.json
         ├── icon.png
+        ├── silent-switches.json   ← Verified silent-install engine and switches
+        ├── sandbox-test-report.txt ← Chat-ready Windows Sandbox log
+        ├── sandbox-failure.log      ← Written when a sandbox test fails (upload this)
+        ├── sandbox-logs/            ← Copied guest/IME logs from the last sandbox test
         ├── .icon-candidates/        ← Alternate icon downloads (GUI picker)
         ├── wingetter-packaging.log  ← Created when packaging fails
         └── ../{InstallerBase}.intunewin
@@ -109,7 +113,8 @@ Or launch via the main script with no parameters:
 
 ### install.ps1
 
-- Runs the silent installer command (`/S`, MSI quiet, or AppX)
+- Runs a verified silent installer command for the detected engine (Inno `/VERYSILENT /LANG=english`, NSIS `/S`, MSI quiet, AppX)
+- Rejects generic `/S` when the installer is Inno Setup (it is not silent for that engine)
 - Logs to `%ProgramData%\Microsoft\IntuneManagementExtension\Logs\{PackageId}-install.log`
 - Returns standard Intune return codes (0, 3010, 1641, 1618)
 
@@ -123,7 +128,7 @@ Or launch via the main script with no parameters:
 ### uninstall.ps1
 
 - Finds uninstall string in registry
-- Prefers quiet uninstall; adds `/S` for NSIS-style EXE when needed
+- Prefers quiet uninstall; uses Inno `/VERYSILENT` or NSIS `/S` when a quiet string is missing
 - Logs to `{PackageId}-uninstall.log`
 
 ## README.md
@@ -250,7 +255,8 @@ Windows Sandbox (Windows 10/11 Pro, Enterprise, or Education) can install, detec
 3. If Windows Sandbox is not enabled, Wingetter prompts to enable the `Containers-DisposableClientVM` optional feature (administrator approval; usually a reboot).
 4. Windows Sandbox starts and runs `install.ps1`. Confirm the step in Wingetter.
 5. Confirm **detection**, then confirm **uninstall**.
-6. If all three steps are confirmed, Wingetter writes `validation.json` and sets `sandboxValidated` on `app.json`.
+6. If all three steps are confirmed **and the install stayed silent** (no language/wizard dialog), Wingetter writes `validation.json` and sets `sandboxValidated` on `app.json`.
+7. After the test (pass or fail), Wingetter writes `sandbox-test-report.txt` in the package folder and copies Intune/guest logs to `sandbox-logs\`. On failure it also writes `sandbox-failure.log` in that same folder — upload that file for diagnostics. Use **Copy report** in the dialog to grab a log before the sandbox closes.
 
 ## License
 

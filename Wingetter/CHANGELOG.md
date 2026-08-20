@@ -1,6 +1,6 @@
 # Wingetter Changelog
 
-## Version 2.3.1 - 2026-08-20
+## Version 2.4.0 - 2026-08-20
 
 ### Test in Sandbox
 - Fixed **Confirm this step** staying disabled after install/detect/uninstall finished successfully in Windows Sandbox
@@ -16,6 +16,19 @@
 - Inside the sandbox, runs `install.ps1`, then `detection.ps1`, then `uninstall.ps1`, waiting for host confirmation after each step
 - Marks the package validated (`validation.json` plus `sandboxValidated` on `app.json`) only when install, detect, and uninstall are all confirmed
 - Windows Home and non-Windows hosts get a clear unsupported message instead of a failed launch
+
+### Silent install switches
+- Detects the installer engine from Winget `Installer Type`, then by probing the downloaded file (Inno, NSIS, WiX Burn, MSI, MSIX)
+- Verifies silent switches against that engine and writes `silent-switches.json`
+- Inno Setup (for example PrusaSlicer) now uses `/VERYSILENT /NORESTART /SUPPRESSMSGBOXES /SP- /LANG=english`. Generic `/S` is not silent, and `/VERYSILENT` without `/LANG=` still shows Select Setup Language when the installer sets `ShowLanguageDialog=yes`.
+- Winget `Silent:` is used only when it is adequate for the engine; otherwise it is overridden and logged
+
+### Sandbox test logs
+- The sandbox guest copies Intune Management Extension transcripts and script console output to the host after each step
+- Writes a chat-ready `sandbox-test-report.txt` in the package folder (also copied to the clipboard) so a failed silent install can be pasted into chat
+- **Copy report** in the Test in Sandbox dialog saves and copies the log before the sandbox shuts down
+- Sandbox watches for installer dialogs (language prompts, wizards). If one appears, it screenshots the desktop, stops the hung installer, and refuses to mark the package validated
+- Failures write `sandbox-failure.log` in the package folder (plus `sandbox-logs\`) so you can upload diagnostics
 
 ## Version 2.2.4 - 2026-08-19
 

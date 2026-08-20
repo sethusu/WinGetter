@@ -171,8 +171,11 @@ catch {
 function New-WingetterUninstallScript {
     param(
         [string]$PackageId,
-        [string]$DisplayName
+        [string]$DisplayName,
+        [string]$InstallerEngine = ''
     )
+
+    $engineLiteral = if ($InstallerEngine) { $InstallerEngine } else { '' }
 
     return @"
 # Uninstall script for $DisplayName
@@ -181,6 +184,7 @@ function New-WingetterUninstallScript {
 `$ErrorActionPreference = 'Stop'
 `$packageId = '$PackageId'
 `$displayName = '$DisplayName'
+`$installerEngine = '$engineLiteral'
 `$logPath = "`$env:ProgramData\Microsoft\IntuneManagementExtension\Logs\`$packageId-uninstall.log"
 
 Start-Transcript -Path `$logPath -Force
@@ -224,9 +228,17 @@ if (-not `$uninstallString) {
 }
 
 `$uninstallCmd = if (`$quietUninstallString) { `$quietUninstallString } else { `$uninstallString }
-if (`$uninstallCmd -notmatch '/S' -and `$uninstallCmd -match '\.exe') {
-    `$uninstallCmd = `$uninstallCmd -replace '"([^"]+\.exe)"', '"`$1" /S'
-    Write-Host 'Added /S flag for silent uninstall'
+if (-not `$quietUninstallString -and `$uninstallCmd -match '\.exe') {
+    `$isInno = (`$installerEngine -eq 'inno' -or `$uninstallCmd -match '(?i)unins\d+\.exe')
+    if (`$isInno) {
+        if (`$uninstallCmd -notmatch '(?i)/VERYSILENT') {
+            `$uninstallCmd = (`$uninstallCmd.Trim() + ' /VERYSILENT /NORESTART /SUPPRESSMSGBOXES')
+            Write-Host 'Added Inno Setup silent uninstall switches'
+        }
+    } elseif (`$uninstallCmd -notmatch '(?i)(?:^|\s)/S(?:\s|$)') {
+        `$uninstallCmd = (`$uninstallCmd.Trim() + ' /S')
+        Write-Host 'Added /S flag for silent uninstall'
+    }
 }
 
 Write-Host "Executing uninstall command: `$uninstallCmd"
@@ -316,6 +328,9 @@ Use this section when creating or reviewing the Win32 app in the Microsoft Intun
 | ``win32LobApp.json`` | Microsoft Graph ``win32LobApp`` definition |
 | ``README.md`` | This documentation file |
 | ``icon.png`` | Application icon for Intune upload (if available) |
+| ``silent-switches.json`` | Verified silent-install engine, switches, and command |
+| ``sandbox-test-report.txt`` | Chat-ready Windows Sandbox test log (created after Test in Sandbox) |
+| ``sandbox-failure.log`` | Sandbox failure summary written into the package folder |
 | ``wingetter-packaging.log`` | Packaging run log (created on failure) |
 
 ## Install Command (raw installer)
@@ -366,7 +381,8 @@ function New-WingetterMetadataFiles {
         [string]$DetectionScript,
         [string]$InstallScript,
         [string]$UninstallScript,
-        [string]$IconFilePath
+        [string]$IconFilePath,
+        $SilentInstallPlan
     )
 
     $uninstallCommandLine = Get-IntuneUninstallCommandLine
@@ -428,6 +444,9 @@ See README.md for full Intune upload reference.
         installerFilename = $InstallerFileName
         installerContext = 2
         architecture = 2
+        installerEngine = if ($SilentInstallPlan) { [string]$SilentInstallPlan.Engine } else { '' }
+        silentInstallCommand = $InstallerInstallCommand
+        silentInstallVerified = if ($SilentInstallPlan) { [bool]$SilentInstallPlan.Verified } else { $false }
     }
     $appJson | ConvertTo-Json -Depth 10 | Set-Content -Path $appJsonPath -Encoding UTF8
 
