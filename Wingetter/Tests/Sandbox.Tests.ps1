@@ -67,6 +67,9 @@ Describe 'New-WingetterSandboxGuestScript' {
             $script | Should -Match 'Waiting for confirmation in Wingetter'
             $script | Should -Match 'C:\\WingetterTest'
             $script | Should -Match 'Copy-Item'
+            $script | Should -Match 'Copy-PackageStepLogs'
+            $script | Should -Match 'console-stdout.txt'
+            $script | Should -Match 'IntuneManagementExtension\\Logs'
         }
     }
 }
@@ -246,6 +249,60 @@ Describe 'Test-WingetterSandboxConfirmations and Complete-WingetterSandboxTest' 
         $result.Validated | Should -Be $false
         $app = Get-Content -LiteralPath (Join-Path $script:validationDir 'app.json') -Raw | ConvertFrom-Json
         $app.sandboxValidated | Should -Be $false
+    }
+}
+
+Describe 'Write-WingetterSandboxTestReport' {
+    It 'Writes a chat-ready report with silent-switch and step log sections' {
+        $temp = Join-Path ([System.IO.Path]::GetTempPath()) ("wingetter-sandbox-report-{0}" -f ([Guid]::NewGuid().ToString('N')))
+        $handshake = Join-Path ([System.IO.Path]::GetTempPath()) ("wingetter-sandbox-hs-{0}" -f ([Guid]::NewGuid().ToString('N')))
+        New-Item -ItemType Directory -Path $temp -Force | Out-Null
+        New-Item -ItemType Directory -Path $handshake -Force | Out-Null
+        try {
+            $installScript = @"
+`$installCommand = @'
+"PrusaSlicer.exe" /S
+'@
+"@
+            Set-Content -LiteralPath (Join-Path $temp 'install.ps1') -Value $installScript
+            Set-Content -LiteralPath (Join-Path $temp 'detection.ps1') -Value '# detect'
+            Set-Content -LiteralPath (Join-Path $temp 'uninstall.ps1') -Value '# uninstall'
+            Set-Content -LiteralPath (Join-Path $temp 'PrusaSlicer.exe') -Value 'MZ Inno Setup Setup Data' -Encoding ASCII
+            '{"packageIdentifier":"Prusa3D.PrusaSlicer","displayName":"PrusaSlicer","version":"2.9.6"}' |
+                Set-Content -LiteralPath (Join-Path $temp 'app.json') -Encoding UTF8
+
+            $installLogs = Join-Path (Join-Path $handshake 'logs') 'install'
+            New-Item -ItemType Directory -Path $installLogs -Force | Out-Null
+            Set-Content -LiteralPath (Join-Path $handshake 'guest.log') -Value '2026-08-20 Starting install.ps1'
+            Set-Content -LiteralPath (Join-Path $installLogs 'console-stdout.txt') -Value 'Executing install command: "PrusaSlicer.exe" /S'
+            Set-Content -LiteralPath (Join-Path $installLogs 'Prusa3D.PrusaSlicer-install.log') -Value 'Install failed with exit code 1'
+            '{"action":"install"}' | Set-Content -LiteralPath (Join-Path $handshake 'command.json') -Encoding UTF8
+            '{"step":"install","state":"completed","exitCode":1}' | Set-Content -LiteralPath (Join-Path $handshake 'status.json') -Encoding UTF8
+
+            $confirmations = @{
+                install = @{ Confirmed = $false; ExitCode = 1; Message = 'install.ps1 finished with exit code 1.' }
+                detect = @{ Confirmed = $false; ExitCode = $null; Message = '' }
+                uninstall = @{ Confirmed = $false; ExitCode = $null; Message = '' }
+            }
+
+            $report = Write-WingetterSandboxTestReport -VersionDirectory $temp -HandshakeDirectory $handshake `
+                -Confirmations $confirmations -Outcome 'failed' -Message 'install was not confirmed.'
+
+            Test-Path -LiteralPath $report.Path | Should -Be $true
+            $report.Path | Should -Match 'sandbox-test-report\.txt$'
+            $report.Text | Should -Match 'Wingetter sandbox test report'
+            $report.Text | Should -Match 'Prusa3D.PrusaSlicer'
+            $report.Text | Should -Match '/VERYSILENT'
+            $report.Text | Should -Match 'WARNING'
+            $report.Text | Should -Match 'exitCode=1'
+            $report.Text | Should -Match 'Guest coordinator log'
+            $report.Text | Should -Match 'Install failed with exit code 1'
+            Test-Path -LiteralPath (Join-Path $temp 'sandbox-logs') | Should -Be $true
+            Test-Path -LiteralPath (Join-Path (Join-Path $temp 'sandbox-logs') 'guest.log') | Should -Be $true
+        } finally {
+            Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $handshake -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 

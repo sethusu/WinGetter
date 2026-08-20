@@ -524,6 +524,43 @@ function Read-CommandAction {
     }
 }
 
+function Copy-PackageStepLogs {
+    param(
+        [string]$Step,
+        [int]$ExitCode,
+        [string]$StdoutPath,
+        [string]$StderrPath
+    )
+
+    $stepLogDir = Join-Path $handshakeRoot ('logs\' + $Step)
+    if (-not (Test-Path -LiteralPath $stepLogDir)) {
+        New-Item -ItemType Directory -Path $stepLogDir -Force | Out-Null
+    }
+
+    Write-GuestJson -Path (Join-Path $stepLogDir 'step.json') -Object @{
+        step = $Step
+        exitCode = $ExitCode
+        finishedAt = (Get-Date).ToUniversalTime().ToString('o')
+        computerName = $env:COMPUTERNAME
+    }
+
+    foreach ($sourcePath in @($StdoutPath, $StderrPath)) {
+        if ($sourcePath -and (Test-Path -LiteralPath $sourcePath)) {
+            Copy-Item -LiteralPath $sourcePath -Destination (Join-Path $stepLogDir ([System.IO.Path]::GetFileName($sourcePath))) -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    $imeLogs = Join-Path $env:ProgramData 'Microsoft\IntuneManagementExtension\Logs'
+    if (Test-Path -LiteralPath $imeLogs) {
+        Get-ChildItem -LiteralPath $imeLogs -File -ErrorAction SilentlyContinue | ForEach-Object {
+            Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $stepLogDir $_.Name) -Force -ErrorAction SilentlyContinue
+        }
+        Write-GuestLog "Copied Intune logs for $Step to $stepLogDir"
+    } else {
+        Write-GuestLog "No Intune log folder found at $imeLogs"
+    }
+}
+
 function Invoke-PackageStep {
     param(
         [ValidateSet('install', 'detect', 'uninstall')]
@@ -542,9 +579,15 @@ function Invoke-PackageStep {
     Write-GuestLog "Starting $scriptName"
     Write-Status -Step $Step -State 'running' -Message "Running $scriptName"
 
+    $stepLogDir = Join-Path $handshakeRoot ('logs\' + $Step)
+    if (-not (Test-Path -LiteralPath $stepLogDir)) {
+        New-Item -ItemType Directory -Path $stepLogDir -Force | Out-Null
+    }
+
     if (-not (Test-Path -LiteralPath $scriptPath)) {
         Write-GuestLog "Missing $scriptPath"
         Write-Status -Step $Step -State 'failed' -ExitCode 1 -Message "$scriptName was not found in the mapped package folder."
+        Copy-PackageStepLogs -Step $Step -ExitCode 1
         return
     }
 
@@ -553,12 +596,17 @@ function Invoke-PackageStep {
         New-Item -ItemType Directory -Path $logDir -Force | Out-Null
     }
 
+    $stdoutPath = Join-Path $stepLogDir 'console-stdout.txt'
+    $stderrPath = Join-Path $stepLogDir 'console-stderr.txt'
+
     Set-Location -Path $packageRoot
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $scriptPath
-    $exitCode = $LASTEXITCODE
-    if ($null -eq $exitCode) {
-        $exitCode = 1
+    $process = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $scriptPath) -Wait -PassThru -NoNewWindow -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath
+    $exitCode = 1
+    if ($process -and $null -ne $process.ExitCode) {
+        $exitCode = [int]$process.ExitCode
     }
+
+    Copy-PackageStepLogs -Step $Step -ExitCode $exitCode -StdoutPath $stdoutPath -StderrPath $stderrPath
 
     $message = "$scriptName finished with exit code $exitCode."
     Write-GuestLog $message
@@ -812,22 +860,347 @@ function Get-WingetterSandboxGuestLog {
     param(
         [Parameter(Mandatory = $true)]
         [string]$HandshakeDirectory,
-        [int]$Tail = 40
+        [int]$Tail = 40,
+        [switch]$IncludeStepLogs
     )
 
+    $blocks = New-Object System.Collections.Generic.List[string]
     $path = Join-Path $HandshakeDirectory 'guest.log'
-    if (-not (Test-Path -LiteralPath $path)) {
+    if (Test-Path -LiteralPath $path) {
+        try {
+            $lines = Get-Content -LiteralPath $path -ErrorAction Stop
+            if ($Tail -gt 0 -and $lines.Count -gt $Tail) {
+                $lines = $lines | Select-Object -Last $Tail
+            }
+            if ($lines) {
+                $blocks.Add(($lines -join "`r`n")) | Out-Null
+            }
+        } catch { }
+    }
+
+    if ($IncludeStepLogs) {
+        foreach ($step in @('install', 'detect', 'uninstall')) {
+            $stepDir = Join-Path (Join-Path $HandshakeDirectory 'logs') $step
+            if (-not (Test-Path -LiteralPath $stepDir)) {
+                continue
+            }
+
+            $ime = Get-ChildItem -LiteralPath $stepDir -File -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -like '*-install.log' -or $_.Name -like '*-detection.log' -or $_.Name -like '*-uninstall.log' } |
+                Sort-Object LastWriteTime -Descending |
+                Select-Object -First 1
+            if (-not $ime) {
+                $ime = Get-ChildItem -LiteralPath $stepDir -File -ErrorAction SilentlyContinue |
+                    Where-Object { $_.Name -eq 'console-stdout.txt' } |
+                    Select-Object -First 1
+            }
+            if ($ime) {
+                try {
+                    $stepLines = Get-Content -LiteralPath $ime.FullName -ErrorAction Stop
+                    if ($Tail -gt 0 -and $stepLines.Count -gt $Tail) {
+                        $stepLines = $stepLines | Select-Object -Last $Tail
+                    }
+                    if ($stepLines) {
+                        $blocks.Add(('--- {0} ({1}) ---' -f $step, $ime.Name)) | Out-Null
+                        $blocks.Add(($stepLines -join "`r`n")) | Out-Null
+                    }
+                } catch { }
+            }
+        }
+    }
+
+    return ($blocks -join "`r`n")
+}
+
+function Limit-WingetterReportText {
+    param(
+        [string]$Text,
+        [int]$MaxChars = 14000
+    )
+
+    if ([string]::IsNullOrEmpty($Text)) {
+        return ''
+    }
+    if ($Text.Length -le $MaxChars) {
+        return $Text
+    }
+
+    $keepHead = [int]($MaxChars * 0.65)
+    $keepTail = $MaxChars - $keepHead - 80
+    if ($keepTail -lt 500) {
+        $keepTail = 500
+        $keepHead = $MaxChars - $keepTail - 80
+    }
+
+    $omitted = $Text.Length - $MaxChars
+    return (
+        $Text.Substring(0, $keepHead) +
+        "`r`n`r`n[... truncated $omitted characters ...]`r`n`r`n" +
+        $Text.Substring($Text.Length - $keepTail)
+    )
+}
+
+function Read-WingetterTextFile {
+    param(
+        [string]$Path,
+        [int]$MaxChars = 14000
+    )
+
+    if (-not $Path -or -not (Test-Path -LiteralPath $Path)) {
         return ''
     }
 
     try {
-        $lines = Get-Content -LiteralPath $path -ErrorAction Stop
-        if ($Tail -gt 0 -and $lines.Count -gt $Tail) {
-            $lines = $lines | Select-Object -Last $Tail
-        }
-        return ($lines -join "`r`n")
+        $raw = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
+        return (Limit-WingetterReportText -Text $raw -MaxChars $MaxChars)
     } catch {
         return ''
+    }
+}
+
+function Copy-WingetterSandboxLogsToPackage {
+    param(
+        [string]$HandshakeDirectory,
+        [string]$VersionDirectory
+    )
+
+    if (-not $HandshakeDirectory -or -not $VersionDirectory) {
+        return $null
+    }
+    if (-not (Test-Path -LiteralPath $HandshakeDirectory) -or -not (Test-Path -LiteralPath $VersionDirectory)) {
+        return $null
+    }
+
+    $dest = Join-Path $VersionDirectory 'sandbox-logs'
+    if (Test-Path -LiteralPath $dest) {
+        Remove-Item -LiteralPath $dest -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    New-Item -ItemType Directory -Path $dest -Force | Out-Null
+
+    $guestLog = Join-Path $HandshakeDirectory 'guest.log'
+    if (Test-Path -LiteralPath $guestLog) {
+        Copy-Item -LiteralPath $guestLog -Destination (Join-Path $dest 'guest.log') -Force -ErrorAction SilentlyContinue
+    }
+
+    foreach ($name in @('command.json', 'status.json', 'heartbeat.json')) {
+        $source = Join-Path $HandshakeDirectory $name
+        if (Test-Path -LiteralPath $source) {
+            Copy-Item -LiteralPath $source -Destination (Join-Path $dest $name) -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    $logsRoot = Join-Path $HandshakeDirectory 'logs'
+    if (Test-Path -LiteralPath $logsRoot) {
+        Copy-Item -Path $logsRoot -Destination (Join-Path $dest 'steps') -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    return $dest
+}
+
+function Get-WingetterSandboxTestReportPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$VersionDirectory
+    )
+
+    return (Join-Path $VersionDirectory 'sandbox-test-report.txt')
+}
+
+function Write-WingetterSandboxTestReport {
+    <#
+    .SYNOPSIS
+        Writes a chat-ready sandbox test report next to the packaged app.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$VersionDirectory,
+        [string]$HandshakeDirectory,
+        [hashtable]$Confirmations,
+        [string]$Outcome = 'in-progress',
+        [string]$Message = ''
+    )
+
+    $info = $null
+    try {
+        $info = Get-WingetterSandboxPackageInfo -VersionDirectory $VersionDirectory
+    } catch {
+        $info = $null
+    }
+
+    $silentInfo = $null
+    try {
+        $silentInfo = Get-WingetterPackageSilentInstallInfo -VersionDirectory $VersionDirectory
+    } catch {
+        $silentInfo = $null
+    }
+
+    $copiedLogs = $null
+    if ($HandshakeDirectory) {
+        $copiedLogs = Copy-WingetterSandboxLogsToPackage -HandshakeDirectory $HandshakeDirectory -VersionDirectory $VersionDirectory
+    }
+
+    $builder = New-Object System.Text.StringBuilder
+    [void]$builder.AppendLine('=== Wingetter sandbox test report ===')
+    [void]$builder.AppendLine('Paste this entire file into chat if a sandbox install/detect/uninstall needs diagnosis.')
+    [void]$builder.AppendLine(('Generated (UTC): {0}' -f (Get-Date).ToUniversalTime().ToString('o')))
+    [void]$builder.AppendLine(('Outcome: {0}' -f $Outcome))
+    if ($Message) {
+        [void]$builder.AppendLine(('Message: {0}' -f $Message))
+    }
+    [void]$builder.AppendLine('')
+
+    $displayName = if ($info -and $info.DisplayName) { $info.DisplayName } else { '' }
+    $packageId = if ($info -and $info.PackageId) { $info.PackageId } else { '' }
+    $version = if ($info -and $info.Version) { $info.Version } else { '' }
+    [void]$builder.AppendLine('--- Package ---')
+    [void]$builder.AppendLine(('Display name: {0}' -f $displayName))
+    [void]$builder.AppendLine(('Package ID: {0}' -f $packageId))
+    [void]$builder.AppendLine(('Version: {0}' -f $version))
+    [void]$builder.AppendLine(('Package folder: {0}' -f $VersionDirectory))
+    if ($HandshakeDirectory) {
+        [void]$builder.AppendLine(('Handshake folder: {0}' -f $HandshakeDirectory))
+    }
+    if ($copiedLogs) {
+        [void]$builder.AppendLine(('Copied sandbox logs: {0}' -f $copiedLogs))
+    }
+    [void]$builder.AppendLine('')
+
+    [void]$builder.AppendLine('--- Silent install verification ---')
+    if ($silentInfo -and $silentInfo.Recommended) {
+        $plan = $silentInfo.Recommended
+        [void]$builder.AppendLine(('Engine: {0} (source: {1})' -f $plan.Engine, $plan.EngineSource))
+        if ($plan.ProbeSignature) {
+            [void]$builder.AppendLine(('File signature: {0}' -f $plan.ProbeSignature))
+        }
+        [void]$builder.AppendLine(('Winget installer type: {0}' -f $plan.WingetInstallerType))
+        [void]$builder.AppendLine(('Winget Silent switch: {0}' -f $plan.WingetSilentSwitch))
+        [void]$builder.AppendLine(('Verified command: {0}' -f $plan.Command))
+        [void]$builder.AppendLine(('Verified: {0}' -f $plan.Verified))
+        if ($plan.Overridden) {
+            [void]$builder.AppendLine(('Overridden: {0}' -f $plan.OverrideReason))
+        }
+        foreach ($warning in @($plan.Warnings)) {
+            if ($warning) {
+                [void]$builder.AppendLine(('Warning: {0}' -f $warning))
+            }
+        }
+    } elseif ($silentInfo -and $silentInfo.Manifest) {
+        [void]$builder.AppendLine(('Engine: {0}' -f $silentInfo.Manifest.engine))
+        [void]$builder.AppendLine(('Command: {0}' -f $silentInfo.Manifest.command))
+        [void]$builder.AppendLine(('Verified: {0}' -f $silentInfo.Manifest.verified))
+    } else {
+        [void]$builder.AppendLine('No silent-switches.json or installer was found to verify.')
+    }
+
+    if ($silentInfo -and $silentInfo.PackagedCommand) {
+        [void]$builder.AppendLine(('Packaged install.ps1 command: {0}' -f $silentInfo.PackagedCommand))
+    }
+    if ($silentInfo -and $silentInfo.Mismatch) {
+        [void]$builder.AppendLine(('WARNING: {0}' -f $silentInfo.MismatchReason))
+        [void]$builder.AppendLine('Test in Sandbox runs the packaged install.ps1 as-is. Re-create the package with this Wingetter version to bake in verified silent switches.')
+    }
+    [void]$builder.AppendLine('')
+
+    [void]$builder.AppendLine('--- Step results ---')
+    foreach ($step in @('install', 'detect', 'uninstall')) {
+        $item = $null
+        if ($Confirmations -and $Confirmations.ContainsKey($step)) {
+            $item = $Confirmations[$step]
+        }
+        $confirmed = if ($item) { Get-ConfirmationValue -Item $item -Name 'Confirmed' } else { $null }
+        $exitCode = if ($item) { Get-ConfirmationValue -Item $item -Name 'ExitCode' } else { $null }
+        $stepMessage = if ($item) { Get-ConfirmationValue -Item $item -Name 'Message' } else { $null }
+        $confirmedAt = if ($item) { Get-ConfirmationValue -Item $item -Name 'ConfirmedAt' } else { $null }
+        [void]$builder.AppendLine(('{0}: confirmed={1}; exitCode={2}; at={3}; message={4}' -f $step, $confirmed, $exitCode, $confirmedAt, $stepMessage))
+    }
+    [void]$builder.AppendLine('')
+
+    $statusJson = ''
+    $commandJson = ''
+    if ($HandshakeDirectory) {
+        $statusJson = Read-WingetterTextFile -Path (Join-Path $HandshakeDirectory 'status.json') -MaxChars 4000
+        $commandJson = Read-WingetterTextFile -Path (Join-Path $HandshakeDirectory 'command.json') -MaxChars 2000
+    }
+    if ($commandJson) {
+        [void]$builder.AppendLine('--- command.json ---')
+        [void]$builder.AppendLine($commandJson)
+        [void]$builder.AppendLine('')
+    }
+    if ($statusJson) {
+        [void]$builder.AppendLine('--- status.json ---')
+        [void]$builder.AppendLine($statusJson)
+        [void]$builder.AppendLine('')
+    }
+
+    $guestLogText = ''
+    if ($HandshakeDirectory) {
+        $guestLogText = Read-WingetterTextFile -Path (Join-Path $HandshakeDirectory 'guest.log') -MaxChars 12000
+    } elseif ($copiedLogs) {
+        $guestLogText = Read-WingetterTextFile -Path (Join-Path $copiedLogs 'guest.log') -MaxChars 12000
+    }
+    [void]$builder.AppendLine('--- Guest coordinator log ---')
+    if ($guestLogText) {
+        [void]$builder.AppendLine($guestLogText)
+    } else {
+        [void]$builder.AppendLine('(no guest.log yet)')
+    }
+    [void]$builder.AppendLine('')
+
+    $logRoot = $null
+    if ($HandshakeDirectory -and (Test-Path -LiteralPath (Join-Path $HandshakeDirectory 'logs'))) {
+        $logRoot = Join-Path $HandshakeDirectory 'logs'
+    } elseif ($copiedLogs -and (Test-Path -LiteralPath (Join-Path $copiedLogs 'steps'))) {
+        $logRoot = Join-Path $copiedLogs 'steps'
+    }
+
+    foreach ($step in @('install', 'detect', 'uninstall')) {
+        [void]$builder.AppendLine(('--- {0} logs ---' -f $step))
+        if (-not $logRoot) {
+            [void]$builder.AppendLine('(no copied step logs)')
+            [void]$builder.AppendLine('')
+            continue
+        }
+
+        $stepDir = Join-Path $logRoot $step
+        if (-not (Test-Path -LiteralPath $stepDir)) {
+            [void]$builder.AppendLine('(step not run or logs were not copied)')
+            [void]$builder.AppendLine('')
+            continue
+        }
+
+        $preferred = @(
+            (Join-Path $stepDir 'step.json')
+            (Join-Path $stepDir 'console-stdout.txt')
+            (Join-Path $stepDir 'console-stderr.txt')
+        )
+        $imeFiles = @(Get-ChildItem -LiteralPath $stepDir -File -ErrorAction SilentlyContinue |
+            Where-Object { $_.Extension -eq '.log' } |
+            Sort-Object Name)
+        foreach ($filePath in @($preferred + @($imeFiles | ForEach-Object { $_.FullName }))) {
+            if (-not $filePath -or -not (Test-Path -LiteralPath $filePath)) {
+                continue
+            }
+            $content = Read-WingetterTextFile -Path $filePath -MaxChars 10000
+            if (-not $content) {
+                continue
+            }
+            [void]$builder.AppendLine(('[{0}]' -f ([System.IO.Path]::GetFileName($filePath))))
+            [void]$builder.AppendLine($content)
+            [void]$builder.AppendLine('')
+        }
+    }
+
+    $text = $builder.ToString()
+    $text = Limit-WingetterReportText -Text $text -MaxChars 80000
+    $reportPath = Get-WingetterSandboxTestReportPath -VersionDirectory $VersionDirectory
+    Set-Content -LiteralPath $reportPath -Value $text -Encoding UTF8
+
+    return [PSCustomObject]@{
+        Path              = $reportPath
+        Text              = $text
+        CopiedLogsPath    = $copiedLogs
+        Outcome           = $Outcome
     }
 }
 

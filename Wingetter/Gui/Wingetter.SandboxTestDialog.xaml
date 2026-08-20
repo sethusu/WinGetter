@@ -55,10 +55,14 @@
       </Border>
     </Grid>
 
-    <StackPanel Grid.Row="4" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,14,0,0">
-      <Button x:Name="CancelButton" Content="Cancel" Width="100" Height="32" Margin="0,0,8,0"/>
-      <Button x:Name="FailButton" Content="Step failed" Width="110" Height="32" Margin="0,0,8,0" IsEnabled="False"/>
-      <Button x:Name="ConfirmButton" Content="Confirm this step" Width="150" Height="32" FontWeight="SemiBold" IsEnabled="False"/>
-    </StackPanel>
+    <DockPanel Grid.Row="4" Margin="0,14,0,0">
+      <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+        <Button x:Name="CancelButton" Content="Cancel" Width="100" Height="32" Margin="0,0,8,0"/>
+        <Button x:Name="FailButton" Content="Step failed" Width="110" Height="32" Margin="0,0,8,0" IsEnabled="False"/>
+        <Button x:Name="ConfirmButton" Content="Confirm this step" Width="150" Height="32" FontWeight="SemiBold" IsEnabled="False"/>
+      </StackPanel>
+      <Button x:Name="CopyReportButton" Content="Copy report" Width="120" Height="32" HorizontalAlignment="Left"
+              ToolTip="Copy a chat-ready sandbox log to the clipboard and save it in the package folder."/>
+    </DockPanel>
   </Grid>
 </Window>
