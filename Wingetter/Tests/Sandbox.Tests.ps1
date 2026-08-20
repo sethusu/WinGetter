@@ -73,6 +73,9 @@ Describe 'New-WingetterSandboxGuestScript' {
             $script | Should -Match 'Save-DesktopScreenshot'
             $script | Should -Match 'ui-activity.json'
             $script | Should -Match 'interactive window'
+            $script | Should -Match 'WingetterStep-'
+            $script | Should -Match 'process.Refresh'
+            $script | Should -Match 'Windows PowerShell transcript end'
         }
     }
 }
@@ -405,6 +408,61 @@ Describe 'Resolve-WingetterSandboxStepStatus' {
             $status = Resolve-WingetterSandboxStepStatus -HandshakeDirectory $handshake -Step detect
             $status.state | Should -Be 'completed'
             $status.exitCode | Should -Be 1
+        } finally {
+            Remove-Item -LiteralPath $handshake -Recurse -Force
+        }
+    }
+
+    It 'Treats an install transcript as completed while status.json is still running' {
+        $handshake = Join-Path ([System.IO.Path]::GetTempPath()) ("wingetter-sandbox-status-{0}" -f ([Guid]::NewGuid().ToString('N')))
+        $stepDir = Join-Path $handshake 'logs\install'
+        New-Item -ItemType Directory -Path $stepDir -Force | Out-Null
+        try {
+            @{
+                step = 'install'
+                state = 'running'
+                exitCode = $null
+                message = 'Running install.ps1'
+                updatedAt = (Get-Date).ToUniversalTime().ToString('o')
+            } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $handshake 'status.json') -Encoding UTF8
+
+            @(
+                'Starting install for PrusaSlicer (Prusa3D.PrusaSlicer) version 2.9.6'
+                'Executing install command: "PrusaSlicer_2.9.6_Machine_X64_inno_en-US.exe" /VERYSILENT /NORESTART /SUPPRESSMSGBOXES /SP- /LANG=english'
+                'Install completed successfully.'
+                'Windows PowerShell transcript end'
+                'End time: 20260819214839'
+            ) | Set-Content -LiteralPath (Join-Path $stepDir 'console-stdout.txt') -Encoding UTF8
+
+            $status = Resolve-WingetterSandboxStepStatus -HandshakeDirectory $handshake -Step install
+            $status.state | Should -Be 'completed'
+            $status.exitCode | Should -Be 0
+            $status.source | Should -Be 'step-log'
+        } finally {
+            Remove-Item -LiteralPath $handshake -Recurse -Force
+        }
+    }
+
+    It 'Treats dialog log text as completed when handshake files still say running' {
+        $handshake = Join-Path ([System.IO.Path]::GetTempPath()) ("wingetter-sandbox-status-{0}" -f ([Guid]::NewGuid().ToString('N')))
+        New-Item -ItemType Directory -Path $handshake -Force | Out-Null
+        try {
+            @{
+                step = 'install'
+                state = 'running'
+                exitCode = $null
+                message = 'Running install.ps1'
+                updatedAt = (Get-Date).ToUniversalTime().ToString('o')
+            } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $handshake 'status.json') -Encoding UTF8
+
+            $logText = @"
+Install completed successfully.
+Windows PowerShell transcript end
+End time: 20260819214839
+"@
+            $status = Resolve-WingetterSandboxStepStatus -HandshakeDirectory $handshake -Step install -LogText $logText
+            $status.state | Should -Be 'completed'
+            $status.exitCode | Should -Be 0
         } finally {
             Remove-Item -LiteralPath $handshake -Recurse -Force
         }
