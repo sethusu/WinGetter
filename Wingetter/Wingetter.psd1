@@ -1,5 +1,5 @@
 @{
-    ModuleVersion     = '2.2.4'
+    ModuleVersion     = '2.3.0'
     GUID              = 'a3f8c2e1-9b4d-4f7a-8e6c-1d2b3a4c5e6f'
     Author            = 'Wingetter'
     CompanyName       = 'Wingetter'
@@ -21,6 +21,20 @@
         'Resolve-PackageIcon'
         'Resolve-PackageIconCandidates'
         'Set-WingetterPackageIconFiles'
+        'Test-WingetterWindowsSandbox'
+        'Install-WingetterWindowsSandbox'
+        'Resolve-WingetterPackageVersionDirectory'
+        'Test-WingetterSandboxPackage'
+        'Get-WingetterSandboxPackageInfo'
+        'Start-WingetterSandboxSession'
+        'Set-WingetterSandboxCommand'
+        'Get-WingetterSandboxStatus'
+        'Get-WingetterSandboxHeartbeat'
+        'Get-WingetterSandboxGuestLog'
+        'Stop-WingetterSandboxSession'
+        'Test-WingetterSandboxConfirmations'
+        'Complete-WingetterSandboxTest'
+        'Get-WingetterPackageValidation'
     )
     PrivateData       = @{
         PSData = @{

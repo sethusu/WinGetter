@@ -6,6 +6,7 @@ $privateScripts = @(
     'Assets.ps1'
     'Scripts.ps1'
     'Packaging.ps1'
+    'Sandbox.ps1'
 )
 
 $privateRoot = Join-Path $PSScriptRoot 'Private'
@@ -30,4 +31,18 @@ Export-ModuleMember -Function @(
     'Resolve-PackageIcon'
     'Resolve-PackageIconCandidates'
     'Set-WingetterPackageIconFiles'
+    'Test-WingetterWindowsSandbox'
+    'Install-WingetterWindowsSandbox'
+    'Resolve-WingetterPackageVersionDirectory'
+    'Test-WingetterSandboxPackage'
+    'Get-WingetterSandboxPackageInfo'
+    'Start-WingetterSandboxSession'
+    'Set-WingetterSandboxCommand'
+    'Get-WingetterSandboxStatus'
+    'Get-WingetterSandboxHeartbeat'
+    'Get-WingetterSandboxGuestLog'
+    'Stop-WingetterSandboxSession'
+    'Test-WingetterSandboxConfirmations'
+    'Complete-WingetterSandboxTest'
+    'Get-WingetterPackageValidation'
 )

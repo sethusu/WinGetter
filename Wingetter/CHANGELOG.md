@@ -1,5 +1,14 @@
 # Wingetter Changelog
 
+## Version 2.3.0 - 2026-08-19
+
+### Test in Sandbox
+- Added a **Test in Sandbox** button that launches Windows Sandbox against the packaged app folder
+- Checks whether Windows Sandbox (`Containers-DisposableClientVM`) is enabled; if it is not, prompts to enable it (administrator approval, usually a reboot)
+- Inside the sandbox, runs `install.ps1`, then `detection.ps1`, then `uninstall.ps1`, waiting for host confirmation after each step
+- Marks the package validated (`validation.json` plus `sandboxValidated` on `app.json`) only when install, detect, and uninstall are all confirmed
+- Windows Home and non-Windows hosts get a clear unsupported message instead of a failed launch
+
 ## Version 2.2.4 - 2026-08-19
 
 ### Search selection and download pinning

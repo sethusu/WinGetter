@@ -269,6 +269,284 @@ function Show-WingetterSearchDialog {
     return $null
 }
 
+function Get-SandboxStepIcon {
+    param([string]$State)
+    switch ($State) {
+        'Running' { return [char]0x25B6 }
+        'Awaiting' { return [char]0x25B6 }
+        'Confirmed' { return [char]0x2713 }
+        'Failed' { return [char]0x2717 }
+        default { return [char]0x25CB }
+    }
+}
+
+function New-SandboxStepView {
+    param(
+        [string]$Title,
+        [string]$State,
+        [string]$Detail
+    )
+    return [PSCustomObject]@{
+        Icon = Get-SandboxStepIcon $State
+        Title = $Title
+        Detail = $Detail
+        State = $State
+    }
+}
+
+function Update-SandboxDialogStepList {
+    if (-not $script:sandboxDialog) { return }
+    $ui = $script:sandboxDialog
+    $ui.StepList.Items.Clear()
+    foreach ($name in $ui.StepOrder) {
+        $ui.StepList.Items.Add((New-SandboxStepView -Title $ui.StepTitles[$name] -State $ui.StepStates[$name] -Detail $ui.StepDetails[$name])) | Out-Null
+    }
+}
+
+function Set-SandboxDialogLog {
+    param([string]$Text)
+    if (-not $script:sandboxDialog) { return }
+    if ($Text -eq $script:sandboxDialog.LastLog) { return }
+    $script:sandboxDialog.LastLog = $Text
+    $script:sandboxDialog.LogBox.Text = $Text
+    $script:sandboxDialog.LogBox.CaretIndex = $script:sandboxDialog.LogBox.Text.Length
+    $script:sandboxDialog.LogBox.ScrollToEnd()
+}
+
+function Complete-SandboxDialog {
+    param(
+        [bool]$Validated,
+        [object]$Validation = $null,
+        [string]$Message = ''
+    )
+
+    if (-not $script:sandboxDialog -or $script:sandboxDialog.Finished) { return }
+    $script:sandboxDialog.Finished = $true
+    $script:sandboxDialog.Result = [PSCustomObject]@{
+        Validated = $Validated
+        Validation = $Validation
+        Message = $Message
+    }
+
+    if ($script:sandboxDialog.Timer) {
+        try { $script:sandboxDialog.Timer.Stop() } catch { }
+    }
+    try {
+        Stop-WingetterSandboxSession -HandshakeDirectory $script:sandboxDialog.Session.HandshakeDirectory
+    } catch { }
+
+    $script:sandboxDialog.Window.Tag = $script:sandboxDialog.Result
+    try {
+        $script:sandboxDialog.Window.DialogResult = $Validated
+    } catch { }
+    try {
+        $script:sandboxDialog.Window.Close()
+    } catch { }
+}
+
+function Confirm-CurrentSandboxStep {
+    param([bool]$Succeeded)
+
+    if (-not $script:sandboxDialog -or $script:sandboxDialog.Finished) { return }
+    $ui = $script:sandboxDialog
+    $step = $ui.CurrentStep
+    if ($ui.StepStates[$step] -ne 'Awaiting') { return }
+
+    $status = Get-WingetterSandboxStatus -HandshakeDirectory $ui.Session.HandshakeDirectory
+    $exitCode = $null
+    $message = ''
+    if ($status) {
+        $exitCode = $status.exitCode
+        $message = [string]$status.message
+    }
+
+    if ($Succeeded) {
+        $ui.Confirmations[$step] = @{
+            Confirmed = $true
+            ExitCode = $exitCode
+            ConfirmedAt = (Get-Date).ToUniversalTime().ToString('o')
+            Message = $message
+        }
+        $ui.StepStates[$step] = 'Confirmed'
+        $ui.StepDetails[$step] = "Confirmed. Exit code: $exitCode"
+        $ui.ConfirmButton.IsEnabled = $false
+        $ui.FailButton.IsEnabled = $false
+
+        $index = [array]::IndexOf($ui.StepOrder, $step)
+        if ($index -lt ($ui.StepOrder.Count - 1)) {
+            $next = $ui.StepOrder[$index + 1]
+            $ui.CurrentStep = $next
+            $ui.StepStates[$next] = 'Running'
+            $ui.StepDetails[$next] = "Running $next in Windows Sandbox..."
+            $ui.StatusText.Text = "Confirmed $step. Starting $next..."
+            Set-WingetterSandboxCommand -HandshakeDirectory $ui.Session.HandshakeDirectory -Action $next
+            Update-SandboxDialogStepList
+        } else {
+            $validation = Complete-WingetterSandboxTest -VersionDirectory $ui.Session.VersionDirectory -Confirmations $ui.Confirmations
+            Complete-SandboxDialog -Validated $true -Validation $validation -Message 'All three steps were confirmed. This package is marked as validated.'
+        }
+        return
+    }
+
+    $ui.Confirmations[$step] = @{
+        Confirmed = $false
+        ExitCode = $exitCode
+        ConfirmedAt = (Get-Date).ToUniversalTime().ToString('o')
+        Message = $message
+    }
+    $ui.StepStates[$step] = 'Failed'
+    $ui.StepDetails[$step] = "Not confirmed. Exit code: $exitCode"
+    $null = Complete-WingetterSandboxTest -VersionDirectory $ui.Session.VersionDirectory -Confirmations $ui.Confirmations
+    Complete-SandboxDialog -Validated $false -Message "$step was not confirmed. The package was not marked as validated."
+}
+
+function Update-SandboxDialogFromStatus {
+    if (-not $script:sandboxDialog -or $script:sandboxDialog.Finished) { return }
+    $ui = $script:sandboxDialog
+
+    $logText = Get-WingetterSandboxGuestLog -HandshakeDirectory $ui.Session.HandshakeDirectory
+    if ($logText) {
+        Set-SandboxDialogLog -Text $logText
+    }
+
+    $heartbeat = Get-WingetterSandboxHeartbeat -HandshakeDirectory $ui.Session.HandshakeDirectory
+    if ($heartbeat) {
+        $ui.HeartbeatSeen = $true
+    } elseif (-not $ui.HeartbeatSeen) {
+        $elapsed = (Get-Date) - $ui.Session.StartedAt
+        if ($elapsed.TotalSeconds -gt 120) {
+            $ui.StatusText.Text = 'Windows Sandbox did not start in time.'
+            Complete-SandboxDialog -Validated $false -Message 'Windows Sandbox did not start. Confirm the feature is enabled, virtualization is available, and try again.'
+            return
+        }
+        $ui.StatusText.Text = "Starting Windows Sandbox... ($([int]$elapsed.TotalSeconds)s)"
+        return
+    }
+
+    $status = Get-WingetterSandboxStatus -HandshakeDirectory $ui.Session.HandshakeDirectory
+    if (-not $status) { return }
+
+    $step = $ui.CurrentStep
+    $statusStep = [string]$status.step
+    $state = [string]$status.state
+
+    if ($statusStep -eq $step -and $state -eq 'running') {
+        $ui.StepStates[$step] = 'Running'
+        $ui.StepDetails[$step] = [string]$status.message
+        $ui.StatusText.Text = [string]$status.message
+        $ui.ConfirmButton.IsEnabled = $false
+        $ui.FailButton.IsEnabled = $false
+    } elseif ($statusStep -eq $step -and ($state -eq 'completed' -or $state -eq 'failed')) {
+        $ui.StepStates[$step] = 'Awaiting'
+        $exitLabel = if ($null -ne $status.exitCode) { "Exit code: $($status.exitCode). " } else { '' }
+        $ui.StepDetails[$step] = "$exitLabel$($status.message) Confirm this step in Wingetter to continue."
+        $ui.StatusText.Text = "Confirm $step, then the next script will run."
+        $ui.ConfirmButton.IsEnabled = $true
+        $ui.FailButton.IsEnabled = $true
+    }
+
+    Update-SandboxDialogStepList
+}
+
+function Show-WingetterSandboxTestDialog {
+    param(
+        [object]$Session,
+        $OwnerWindow
+    )
+
+    $dialogPath = Join-Path $PSScriptRoot 'Wingetter.SandboxTestDialog.xaml'
+    $dialogWindow = Read-XamlWindow -XamlPath $dialogPath
+    $dialogWindow.Owner = $OwnerWindow
+
+    $summary = $dialogWindow.FindName('PackageSummaryText')
+    $statusText = $dialogWindow.FindName('StatusText')
+    $stepList = $dialogWindow.FindName('StepList')
+    $logBox = $dialogWindow.FindName('LogTextBox')
+    $confirmButton = $dialogWindow.FindName('ConfirmButton')
+    $failButton = $dialogWindow.FindName('FailButton')
+    $cancelButton = $dialogWindow.FindName('CancelButton')
+
+    $displayName = if ($Session.DisplayName) { $Session.DisplayName } else { 'Packaged application' }
+    $packageId = if ($Session.PackageId) { $Session.PackageId } else { '' }
+    $version = if ($Session.Version) { $Session.Version } else { '' }
+    $summary.Text = "$displayName $(if ($packageId) { "($packageId)" }) $(if ($version) { "version $version" })`nPackage folder: $($Session.VersionDirectory)"
+
+    $script:sandboxDialog = @{
+        Window = $dialogWindow
+        StatusText = $statusText
+        StepList = $stepList
+        LogBox = $logBox
+        ConfirmButton = $confirmButton
+        FailButton = $failButton
+        Session = $Session
+        Timer = $null
+        CurrentStep = 'install'
+        StepOrder = @('install', 'detect', 'uninstall')
+        StepTitles = @{
+            install = '1. Install (install.ps1)'
+            detect = '2. Detect (detection.ps1)'
+            uninstall = '3. Uninstall (uninstall.ps1)'
+        }
+        StepDetails = @{
+            install = 'Windows Sandbox is starting. install.ps1 will run automatically.'
+            detect = 'Runs after install is confirmed.'
+            uninstall = 'Runs after detection is confirmed.'
+        }
+        StepStates = @{
+            install = 'Running'
+            detect = 'Pending'
+            uninstall = 'Pending'
+        }
+        Confirmations = @{
+            install = @{ Confirmed = $false; ExitCode = $null; ConfirmedAt = $null; Message = '' }
+            detect = @{ Confirmed = $false; ExitCode = $null; ConfirmedAt = $null; Message = '' }
+            uninstall = @{ Confirmed = $false; ExitCode = $null; ConfirmedAt = $null; Message = '' }
+        }
+        HeartbeatSeen = $false
+        Finished = $false
+        Result = $null
+        LastLog = ''
+    }
+
+    Update-SandboxDialogStepList
+    $statusText.Text = 'Starting Windows Sandbox and running install.ps1...'
+
+    $sandboxTimer = New-Object System.Windows.Threading.DispatcherTimer
+    $sandboxTimer.Interval = [TimeSpan]::FromMilliseconds(500)
+    $sandboxTimer.Add_Tick({ Update-SandboxDialogFromStatus })
+    $script:sandboxDialog.Timer = $sandboxTimer
+    $sandboxTimer.Start()
+
+    $confirmButton.Add_Click({ Confirm-CurrentSandboxStep -Succeeded $true })
+    $failButton.Add_Click({ Confirm-CurrentSandboxStep -Succeeded $false })
+    $cancelButton.Add_Click({
+        Complete-SandboxDialog -Validated $false -Message 'Sandbox test was cancelled. The package was not marked as validated.'
+    })
+    $dialogWindow.Add_Closing({
+        if ($script:sandboxDialog -and -not $script:sandboxDialog.Finished) {
+            Complete-SandboxDialog -Validated $false -Message 'Sandbox test was closed before validation completed.'
+        }
+    })
+
+    [void]$dialogWindow.ShowDialog()
+    if ($script:sandboxDialog -and $script:sandboxDialog.Timer) {
+        try { $script:sandboxDialog.Timer.Stop() } catch { }
+    }
+    $result = $null
+    if ($dialogWindow.Tag) {
+        $result = $dialogWindow.Tag
+    } elseif ($script:sandboxDialog -and $script:sandboxDialog.Result) {
+        $result = $script:sandboxDialog.Result
+    }
+    $script:sandboxDialog = $null
+    if ($result) { return $result }
+    return [PSCustomObject]@{
+        Validated = $false
+        Validation = $null
+        Message = 'Sandbox test ended without a result.'
+    }
+}
+
 function New-WpfBitmapImage {
     param([string]$ImagePath)
 
@@ -623,11 +901,14 @@ $iconStatus = $window.FindName('IconStatusText')
 $browseIconButton = $window.FindName('BrowseIconButton')
 $logText = $window.FindName('LogTextBox')
 $openOutputButton = $window.FindName('OpenOutputButton')
+$testSandboxButton = $window.FindName('TestSandboxButton')
+$sandboxStatusText = $window.FindName('SandboxStatusText')
 $packButton = $window.FindName('PackButton')
 
 $script:selectedPackage = $null
 $script:customIconPath = $null
 $script:lastOutputDirectory = $null
+$script:sandboxDialog = $null
 $script:isRunning = $false
 $script:searchJob = $null
 $script:searchTimer = $null
@@ -697,6 +978,147 @@ function Set-SearchControlsEnabled {
     $searchBox.IsEnabled = $Enabled
 }
 
+function Get-CurrentSandboxPackageDirectory {
+    $packageId = $null
+    if ($script:selectedPackage -and $script:selectedPackage.Id) {
+        $packageId = $script:selectedPackage.Id
+    }
+    $version = ''
+    if ($versionBox.Text) {
+        $version = $versionBox.Text.Trim()
+    }
+    $path = ''
+    if ($outputPathBox.Text) {
+        $path = $outputPathBox.Text.Trim()
+    }
+
+    if ($path) {
+        $resolved = Resolve-WingetterPackageVersionDirectory -Path $path -PackageId $packageId -Version $version
+        if ($resolved) {
+            return $resolved
+        }
+    }
+
+    if ($script:lastOutputDirectory -and (Test-WingetterSandboxPackage -VersionDirectory $script:lastOutputDirectory)) {
+        return $script:lastOutputDirectory
+    }
+
+    return $null
+}
+
+function Update-SandboxTestButtonState {
+    $dir = Get-CurrentSandboxPackageDirectory
+    $ready = [bool]($dir -and (Test-WingetterSandboxPackage -VersionDirectory $dir) -and -not $script:isRunning)
+    $testSandboxButton.IsEnabled = $ready
+
+    if (-not $dir) {
+        $sandboxStatusText.Text = 'Create a package, then use Test in Sandbox to validate install, detection, and uninstall.'
+        $sandboxStatusText.Foreground = ConvertTo-WpfBrush '#5C6B7A'
+        return
+    }
+
+    $validation = Get-WingetterPackageValidation -VersionDirectory $dir
+    if ($validation.Validated) {
+        $when = ''
+        if ($validation.ValidatedAt) {
+            $when = " at $($validation.ValidatedAt)"
+        }
+        $sandboxStatusText.Text = "Validated in Windows Sandbox$when"
+        $sandboxStatusText.Foreground = ConvertTo-WpfBrush '#2E7D32'
+    } else {
+        $sandboxStatusText.Text = 'Package ready. Test in Sandbox to confirm install, detection, and uninstall.'
+        $sandboxStatusText.Foreground = ConvertTo-WpfBrush '#5C6B7A'
+    }
+}
+
+function Invoke-WingetterSandboxTestFromUi {
+    if ($script:isRunning) { return }
+
+    $dir = Get-CurrentSandboxPackageDirectory
+    if (-not $dir) {
+        [System.Windows.MessageBox]::Show(
+            $window,
+            'Create a package first. Test in Sandbox needs install.ps1, detection.ps1, and uninstall.ps1.',
+            'Wingetter',
+            'OK',
+            'Warning'
+        ) | Out-Null
+        return
+    }
+
+    $info = Get-WingetterSandboxPackageInfo -VersionDirectory $dir
+    if (-not $info.Ready) {
+        [System.Windows.MessageBox]::Show($window, $info.Reason, 'Wingetter', 'OK', 'Warning') | Out-Null
+        return
+    }
+
+    $sandbox = Test-WingetterWindowsSandbox
+    if (-not $sandbox.Enabled) {
+        if (-not $sandbox.Supported) {
+            [System.Windows.MessageBox]::Show($window, $sandbox.Reason, 'Wingetter', 'OK', 'Error') | Out-Null
+            return
+        }
+
+        if ($sandbox.RestartPending) {
+            [System.Windows.MessageBox]::Show($window, $sandbox.Reason, 'Wingetter', 'OK', 'Information') | Out-Null
+            return
+        }
+
+        $confirm = [System.Windows.MessageBox]::Show(
+            $window,
+            "Windows Sandbox is not enabled on this device.`n`n$($sandbox.Reason)`n`nEnable Windows Sandbox now? This requires administrator approval and usually a restart.",
+            'Wingetter',
+            'YesNo',
+            'Question'
+        )
+        if ($confirm -ne [System.Windows.MessageBoxResult]::Yes) { return }
+
+        try {
+            $enableResult = Install-WingetterWindowsSandbox
+            Add-LogLine -LogControl $logText -Message $enableResult.Message
+            [System.Windows.MessageBox]::Show($window, $enableResult.Message, 'Wingetter', 'OK', 'Information') | Out-Null
+            if ($enableResult.RestartNeeded -or -not $enableResult.Sandbox.Enabled) {
+                return
+            }
+        } catch {
+            Add-LogLine -LogControl $logText -Message "Could not enable Windows Sandbox: $($_.Exception.Message)"
+            [System.Windows.MessageBox]::Show(
+                $window,
+                "Could not enable Windows Sandbox.`n`n$($_.Exception.Message)",
+                'Wingetter',
+                'OK',
+                'Error'
+            ) | Out-Null
+            return
+        }
+    }
+
+    try {
+        Add-LogLine -LogControl $logText -Message "Starting Windows Sandbox test for $($info.DisplayName) $($info.Version)..."
+        $session = Start-WingetterSandboxSession -VersionDirectory $dir
+        $result = Show-WingetterSandboxTestDialog -Session $session -OwnerWindow $window
+        if ($result -and $result.Message) {
+            Add-LogLine -LogControl $logText -Message $result.Message
+        }
+        if ($result.Validated) {
+            [System.Windows.MessageBox]::Show($window, $result.Message, 'Wingetter', 'OK', 'Information') | Out-Null
+        } elseif ($result -and $result.Message) {
+            [System.Windows.MessageBox]::Show($window, $result.Message, 'Wingetter', 'OK', 'Warning') | Out-Null
+        }
+    } catch {
+        Add-LogLine -LogControl $logText -Message "Sandbox test failed: $($_.Exception.Message)"
+        [System.Windows.MessageBox]::Show(
+            $window,
+            "Sandbox test failed.`n`n$($_.Exception.Message)",
+            'Wingetter',
+            'OK',
+            'Error'
+        ) | Out-Null
+    } finally {
+        Update-SandboxTestButtonState
+    }
+}
+
 function Set-PackControlsEnabled {
     param([bool]$Enabled)
     $packButton.IsEnabled = $Enabled
@@ -715,6 +1137,12 @@ function Set-PackControlsEnabled {
     }
     if (-not $Enabled) {
         $openOutputButton.IsEnabled = $false
+        $testSandboxButton.IsEnabled = $false
+    } else {
+        if ($script:lastOutputDirectory -and (Test-Path -LiteralPath $script:lastOutputDirectory)) {
+            $openOutputButton.IsEnabled = $true
+        }
+        Update-SandboxTestButtonState
     }
 }
 
@@ -730,6 +1158,7 @@ function Update-SelectedAppDisplay {
         $selectedAppText.Foreground = ConvertTo-WpfBrush '#5C6B7A'
         Update-OutputPathForSelectedApp
     }
+    Update-SandboxTestButtonState
 }
 
 function Start-PackageIconPreview {
@@ -962,6 +1391,7 @@ function Complete-WingetterPackaging {
 
     $script:lastOutputDirectory = $Result.VersionDirectory
     $openOutputButton.IsEnabled = $true
+    Update-SandboxTestButtonState
 
     $Result = Invoke-PostPackagingIconSelection -Result $Result -OwnerWindow $window `
         -IconPreview $iconPreview -IconStatus $iconStatus -LogText $logText
@@ -972,7 +1402,7 @@ function Complete-WingetterPackaging {
         Add-LogLine -LogControl $logText -Message "Success: $($Result.IntuneWinFile)"
         [System.Windows.MessageBox]::Show(
             $window,
-            "Package created successfully.`n`n$($Result.DisplayName)`n$($Result.IntuneWinFile)",
+            "Package created successfully.`n`n$($Result.DisplayName)`n$($Result.IntuneWinFile)`n`nYou can click Test in Sandbox to confirm install, detection, and uninstall.",
             'Wingetter',
             'OK',
             'Information'
@@ -1096,6 +1526,7 @@ $browseOutputButton.Add_Click({
             }
             Save-WingetterSettings -OutputPath $script:baseOutputPath -LastPackageId $lastId
             Add-LogLine -LogControl $logText -Message "Output base folder set to: $path"
+            Update-SandboxTestButtonState
         }
     } catch {
         Add-LogLine -LogControl $logText -Message "Folder browser failed: $($_.Exception.Message)"
@@ -1138,6 +1569,15 @@ $openOutputButton.Add_Click({
 $packButton.Add_Click({
     if ($script:isRunning) { return }
     Start-WingetterPackagingFromUi
+})
+
+$testSandboxButton.Add_Click({
+    if ($script:isRunning) { return }
+    Invoke-WingetterSandboxTestFromUi
+})
+
+$versionBox.Add_TextChanged({
+    Update-SandboxTestButtonState
 })
 
 $installContentPrepButton.Add_Click({
@@ -1226,6 +1666,9 @@ $window.Add_Closed({
     if ($script:packTimer) { $script:packTimer.Stop() }
     if ($script:iconPreviewTimer) { $script:iconPreviewTimer.Stop() }
     if ($script:contentPrepInstallTimer) { $script:contentPrepInstallTimer.Stop() }
+    if ($script:sandboxDialog -and $script:sandboxDialog.Timer) {
+        try { $script:sandboxDialog.Timer.Stop() } catch { }
+    }
     if ($script:searchJob) { Remove-Job -Job $script:searchJob -Force -ErrorAction SilentlyContinue }
     if ($script:iconPreviewJob) { Remove-Job -Job $script:iconPreviewJob -Force -ErrorAction SilentlyContinue }
     if ($script:contentPrepInstallJob) { Remove-Job -Job $script:contentPrepInstallJob -Force -ErrorAction SilentlyContinue }
@@ -1238,7 +1681,13 @@ $window.Add_Closed({
 
 if ($settings.LastPackageId) {
     Add-LogLine -LogControl $logText -Message "Last packaged app: $($settings.LastPackageId)"
+    $previousPackage = Resolve-WingetterPackageVersionDirectory -Path $script:baseOutputPath -PackageId $settings.LastPackageId
+    if ($previousPackage) {
+        $script:lastOutputDirectory = $previousPackage
+        $openOutputButton.IsEnabled = $true
+    }
 }
 
+Update-SandboxTestButtonState
 Add-LogLine -LogControl $logText -Message 'Wingetter GUI ready.'
 [void]$window.ShowDialog()
