@@ -1121,6 +1121,81 @@ function Set-WingetterPackageIconFiles {
     Copy-Item -Path $SourceIconPath -Destination $IconFilePath -Force
 }
 
+function Update-WingetterWin32LobAppIcon {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$VersionDirectory,
+        [Parameter(Mandatory = $true)]
+        [string]$IconFilePath
+    )
+
+    $win32Path = Join-Path $VersionDirectory 'win32LobApp.json'
+    if (-not (Test-Path -LiteralPath $win32Path)) {
+        return $false
+    }
+    if (-not (Test-Path -LiteralPath $IconFilePath)) {
+        return $false
+    }
+
+    try {
+        $win32 = Get-Content -LiteralPath $win32Path -Raw -ErrorAction Stop | ConvertFrom-Json
+    } catch {
+        return $false
+    }
+
+    $iconBytes = [System.IO.File]::ReadAllBytes($IconFilePath)
+    $iconBase64 = [Convert]::ToBase64String($iconBytes)
+    $iconMimeType = 'image/png'
+    $detectedMimeType = Get-ImageMimeType -Bytes $iconBytes
+    if ($detectedMimeType) {
+        $iconMimeType = $detectedMimeType
+    }
+
+    $largeIcon = [PSCustomObject]@{
+        type  = $iconMimeType
+        value = $iconBase64
+    }
+    $win32 | Add-Member -NotePropertyName largeIcon -NotePropertyValue $largeIcon -Force
+    ($win32 | ConvertTo-Json -Depth 10) | Set-Content -LiteralPath $win32Path -Encoding UTF8
+    return $true
+}
+
+function Update-WingetterPackageIconSelection {
+    <#
+    .SYNOPSIS
+        Applies a chosen icon to logo.png / icon.png and refreshes win32LobApp.json largeIcon.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$VersionDirectory,
+        [Parameter(Mandatory = $true)]
+        [string]$SourceIconPath,
+        [string]$LogoFilePath,
+        [string]$IconFilePath
+    )
+
+    if (-not $LogoFilePath) {
+        $LogoFilePath = Join-Path (Split-Path -Path $VersionDirectory -Parent) 'logo.png'
+        if (-not (Test-Path -LiteralPath (Split-Path -Path $LogoFilePath -Parent))) {
+            $LogoFilePath = Join-Path $VersionDirectory 'logo.png'
+        }
+    }
+    if (-not $IconFilePath) {
+        $IconFilePath = Join-Path $VersionDirectory 'icon.png'
+    }
+
+    Set-WingetterPackageIconFiles -SourceIconPath $SourceIconPath -LogoFilePath $LogoFilePath -IconFilePath $IconFilePath
+    $null = Update-WingetterWin32LobAppIcon -VersionDirectory $VersionDirectory -IconFilePath $IconFilePath
+
+    return [PSCustomObject]@{
+        LogoFile = $LogoFilePath
+        IconFile = $IconFilePath
+        SourceIconPath = $SourceIconPath
+        Win32LobAppUpdated = (Test-Path -LiteralPath (Join-Path $VersionDirectory 'win32LobApp.json'))
+    }
+}
+
 function Resolve-PackageIcon {
     param(
         [string]$PackageId,

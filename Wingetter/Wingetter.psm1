@@ -32,6 +32,8 @@ Export-ModuleMember -Function @(
     'Resolve-PackageIcon'
     'Resolve-PackageIconCandidates'
     'Set-WingetterPackageIconFiles'
+    'Update-WingetterPackageIconSelection'
+    'Resolve-WingetterPackagingUiResult'
     'Test-WingetterWindowsSandbox'
     'Install-WingetterWindowsSandbox'
     'Resolve-WingetterPackageVersionDirectory'

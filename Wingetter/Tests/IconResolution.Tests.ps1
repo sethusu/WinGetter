@@ -90,3 +90,62 @@ Describe 'Get-ImageFileQualityScore helpers' {
         }
     }
 }
+
+Describe 'Resolve-WingetterPackagingUiResult' {
+    It 'Selects the packaging object from Content Prep Tool stdout noise' {
+        $packResult = [PSCustomObject]@{
+            PackageId = 'Posit.RStudio'
+            VersionDirectory = 'D:\Out\Posit.RStudio\2026.08.1+195'
+            IconFile = 'D:\Out\Posit.RStudio\2026.08.1+195\icon.png'
+            LogoFile = 'D:\Out\Posit.RStudio\logo.png'
+        }
+        $raw = @(
+            'Microsoft Win32 Content Prep Tool'
+            'Copyright (c)'
+            $packResult
+            'File created successfully'
+        )
+
+        $resolved = Resolve-WingetterPackagingUiResult -Raw $raw
+        $resolved.PackageId | Should -Be 'Posit.RStudio'
+        $resolved.IconFile | Should -Match 'icon\.png$'
+    }
+
+    It 'Throws when no packaging object is present' {
+        { Resolve-WingetterPackagingUiResult -Raw @('a', 'b') } | Should -Throw '*could not read the packaging result*'
+    }
+}
+
+Describe 'Update-WingetterPackageIconSelection' {
+    It 'Copies the selected icon and refreshes win32LobApp.json largeIcon' {
+        $root = Join-Path ([System.IO.Path]::GetTempPath()) ("wingetter-icon-sel-{0}" -f ([Guid]::NewGuid().ToString('N')))
+        $versionDir = Join-Path $root '1.0.0'
+        New-Item -ItemType Directory -Path $versionDir -Force | Out-Null
+        try {
+            $png = [byte[]](0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D)
+            $source = Join-Path $root 'candidate.png'
+            $logo = Join-Path $root 'logo.png'
+            $icon = Join-Path $versionDir 'icon.png'
+            [System.IO.File]::WriteAllBytes($source, $png)
+            [System.IO.File]::WriteAllBytes((Join-Path $versionDir 'old.png'), $png)
+            @{
+                displayName = 'RStudio'
+                largeIcon = @{ type = 'image/png'; value = 'old' }
+            } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $versionDir 'win32LobApp.json') -Encoding UTF8
+
+            $updated = Update-WingetterPackageIconSelection `
+                -VersionDirectory $versionDir `
+                -SourceIconPath $source `
+                -LogoFilePath $logo `
+                -IconFilePath $icon
+
+            (Test-Path -LiteralPath $updated.IconFile) | Should -Be $true
+            (Test-Path -LiteralPath $updated.LogoFile) | Should -Be $true
+            $win32 = Get-Content -LiteralPath (Join-Path $versionDir 'win32LobApp.json') -Raw | ConvertFrom-Json
+            $win32.largeIcon.value | Should -Not -Be 'old'
+            $win32.largeIcon.value.Length | Should -BeGreaterThan 10
+        } finally {
+            Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}

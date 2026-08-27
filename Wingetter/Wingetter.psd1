@@ -1,5 +1,5 @@
 @{
-    ModuleVersion     = '2.5.0'
+    ModuleVersion     = '2.5.1'
     GUID              = 'a3f8c2e1-9b4d-4f7a-8e6c-1d2b3a4c5e6f'
     Author            = 'Wingetter'
     CompanyName       = 'Wingetter'
@@ -21,6 +21,8 @@
         'Resolve-PackageIcon'
         'Resolve-PackageIconCandidates'
         'Set-WingetterPackageIconFiles'
+        'Update-WingetterPackageIconSelection'
+        'Resolve-WingetterPackagingUiResult'
         'Test-WingetterWindowsSandbox'
         'Install-WingetterWindowsSandbox'
         'Resolve-WingetterPackageVersionDirectory'

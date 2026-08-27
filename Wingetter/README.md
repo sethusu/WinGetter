@@ -240,6 +240,7 @@ Startup details are always written to `%TEMP%\Wingetter-launch.log`.
 - Check `wingetter-packaging.log` in the version output folder
 - Review the log panel in the GUI
 - If the dialog shows `exit code: -1978335209 -- No manifest found matching the criteria` for apps like RStudio, you hit a truncated SemVer build version (`2025.05.1` instead of `2025.05.1+513`). Version **2.4.2+** keeps the `+N` suffix from search and retries `winget show` without `--version` when needed.
+- If choosing a different post-packaging icon shows `The property 'IconFile' cannot be found on this object`, upgrade to **2.5.1+** (Content Prep Tool stdout was polluting the packaging result).
 
 ### Sandbox install exit 666660 (RStudio / NsisMultiUser)
 

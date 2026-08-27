@@ -1,5 +1,13 @@
 # Wingetter Changelog
 
+## Version 2.5.1 - 2026-08-27
+
+### Icon picker after packaging
+- Fixed `Packaging failed: The property 'IconFile' cannot be found on this object` when choosing a different icon after packaging
+- Cause: IntuneWinAppUtil stdout mixed into the packaging runspace result, so the GUI treated a collection as `$Result` and could not set `IconFile`
+- Content Prep Tool output is captured, and the UI selects the real packaging result object before the icon picker
+- Choosing an icon now also updates `win32LobApp.json` `largeIcon`
+
 ## Version 2.5.0 - 2026-08-27
 
 ### Sandbox silent-switch retry
