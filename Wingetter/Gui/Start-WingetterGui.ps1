@@ -392,6 +392,152 @@ function Complete-SandboxDialog {
     } catch { }
 }
 
+function Initialize-SandboxSilentRetryState {
+    param($DialogState)
+
+    $info = Get-WingetterPackageSilentInstallInfo -VersionDirectory $DialogState.Session.VersionDirectory
+    $engine = 'exe'
+    $installerFileName = ''
+    $wingetSilent = ''
+    $packagedArgs = ''
+
+    if ($info.PackagedCommand) {
+        $packagedArgs = [string](Split-WingetterInstallCommand -Command $info.PackagedCommand).Arguments
+    }
+
+    if ($info.Recommended) {
+        $engine = [string]$info.Recommended.Engine
+        $installerFileName = [string]$info.Recommended.InstallerFileName
+        $wingetSilent = [string]$info.Recommended.WingetSilentSwitch
+        if (-not $packagedArgs) {
+            $packagedArgs = [string]$info.Recommended.Arguments
+        }
+    } elseif ($info.Manifest) {
+        $engine = [string]$info.Manifest.engine
+        $installerFileName = [string]$info.Manifest.installerFile
+        $wingetSilent = [string]$info.Manifest.wingetSilentSwitch
+        if (-not $packagedArgs) {
+            $packagedArgs = [string]$info.Manifest.arguments
+        }
+    }
+
+    if (-not $installerFileName -and $info.InstallerPath) {
+        $installerFileName = [System.IO.Path]::GetFileName($info.InstallerPath)
+    }
+
+    # First candidate must match the command already running in the sandbox (packaged install.ps1).
+    $candidates = @(Get-WingetterSilentSwitchCandidates `
+            -Engine $engine `
+            -InstallerFileName $installerFileName `
+            -CurrentArguments $packagedArgs `
+            -WingetSilentSwitch $wingetSilent)
+
+    $DialogState.SilentRetry = @{
+        Engine = $engine
+        InstallerFileName = $installerFileName
+        Candidates = $candidates
+        Index = 0
+        Tried = New-Object System.Collections.Generic.List[string]
+        Active = $true
+        Persisted = $false
+        LastCommand = if ($info.PackagedCommand) { [string]$info.PackagedCommand } else { '' }
+    }
+
+    if ($candidates.Count -gt 0) {
+        $DialogState.SilentRetry.Tried.Add([string]$candidates[0]) | Out-Null
+    }
+}
+
+function Start-SandboxSilentSwitchRetry {
+    param($DialogState)
+
+    $retry = $DialogState.SilentRetry
+    if (-not $retry -or -not $retry.Active) {
+        return $false
+    }
+
+    $nextIndex = [int]$retry.Index + 1
+    while ($nextIndex -lt @($retry.Candidates).Count) {
+        $args = [string]$retry.Candidates[$nextIndex]
+        $alreadyTried = $false
+        foreach ($tried in @($retry.Tried)) {
+            if ([string]::Equals($tried, $args, [StringComparison]::OrdinalIgnoreCase)) {
+                $alreadyTried = $true
+                break
+            }
+        }
+        if ($alreadyTried) {
+            $nextIndex++
+            continue
+        }
+
+        $command = Get-WingetterSilentInstallCommandText `
+            -InstallerFileName $retry.InstallerFileName `
+            -Engine $retry.Engine `
+            -Arguments $args
+
+        $retry.Index = $nextIndex
+        $retry.Tried.Add($args) | Out-Null
+        $retry.LastCommand = $command
+        $attempt = $retry.Tried.Count
+        $total = @($retry.Candidates).Count
+
+        $DialogState.StepStates['install'] = 'Running'
+        $DialogState.StepDetails['install'] = "Retrying silent switch $attempt/$total : $args"
+        $DialogState.StatusText.Text = "Install failed. Trying next silent switch ($attempt/$total): $args"
+        $DialogState.ConfirmButton.IsEnabled = $false
+        $DialogState.FailButton.IsEnabled = $false
+        Update-SandboxDialogStepList
+
+        Set-WingetterSandboxCommand `
+            -HandshakeDirectory $DialogState.Session.HandshakeDirectory `
+            -Action install `
+            -InstallOverride $command `
+            -Attempt $attempt
+        return $true
+    }
+
+    $retry.Active = $false
+    $DialogState.StatusText.Text = 'All silent-switch candidates failed. Confirm this step only if install actually worked, or mark Step failed.'
+    return $false
+}
+
+function Complete-SandboxSilentSwitchSuccess {
+    param(
+        $DialogState,
+        $ExitCode
+    )
+
+    $retry = $DialogState.SilentRetry
+    if (-not $retry -or $retry.Persisted) {
+        return
+    }
+
+    $args = ''
+    if ($retry.Tried.Count -gt 0) {
+        $args = [string]$retry.Tried[$retry.Tried.Count - 1]
+    } elseif ($retry.Candidates.Count -gt 0) {
+        $args = [string]$retry.Candidates[0]
+    }
+
+    try {
+        $update = Update-WingetterPackagedSilentInstall `
+            -VersionDirectory $DialogState.Session.VersionDirectory `
+            -Arguments $args `
+            -Engine $retry.Engine `
+            -ArgumentSource 'sandbox-retry' `
+            -PackageId $DialogState.Session.PackageId `
+            -DisplayName $DialogState.Session.DisplayName `
+            -Version $DialogState.Session.Version
+        $retry.Persisted = $true
+        $retry.Active = $false
+        $DialogState.StatusText.Text = "Silent switch succeeded and was saved to install.ps1: $($update.Command). Confirm this step to continue. Re-run Content Prep if you already built an .intunewin."
+        $DialogState.StepDetails['install'] = "Succeeded with $($update.Command). Saved permanently."
+    } catch {
+        $DialogState.StatusText.Text = "Silent switch succeeded (exit $ExitCode), but saving install.ps1 failed: $($_.Exception.Message). Confirm to continue anyway."
+    }
+}
+
 function Confirm-CurrentSandboxStep {
     param([bool]$Succeeded)
 
@@ -431,6 +577,9 @@ function Confirm-CurrentSandboxStep {
         }
         $ui.ConfirmButton.IsEnabled = $false
         $ui.FailButton.IsEnabled = $false
+        if ($ui.SilentRetry) {
+            $ui.SilentRetry.Active = $false
+        }
 
         $index = [array]::IndexOf($ui.StepOrder, $step)
         if ($index -lt ($ui.StepOrder.Count - 1)) {
@@ -511,7 +660,15 @@ function Update-SandboxDialogFromStatus {
         $ui.ConfirmButton.IsEnabled = $false
         $ui.FailButton.IsEnabled = $false
     } elseif ($statusStep -eq $step -and ($state -eq 'completed' -or $state -eq 'failed')) {
-        $ui.StepStates[$step] = 'Awaiting'
+        $statusAt = [string]$status.updatedAt
+        if ($statusAt -and $ui.LastHandledStatusAt -eq $statusAt) {
+            Update-SandboxDialogStepList
+            return
+        }
+        if ($statusAt) {
+            $ui.LastHandledStatusAt = $statusAt
+        }
+
         $exitLabel = if ($null -ne $status.exitCode) { "Exit code: $($status.exitCode). " } else { '' }
         $silentUi = $false
         if ($status.PSObject.Properties['silentUiDetected']) {
@@ -520,14 +677,41 @@ function Update-SandboxDialogFromStatus {
         if (-not $silentUi -and [string]$status.message -match '(?i)not silent') {
             $silentUi = $true
         }
-        $ui.StepDetails[$step] = "$exitLabel$($status.message) Confirm this step in Wingetter to continue."
-        if ($silentUi) {
-            $ui.StatusText.Text = "NOT SILENT: an installer dialog appeared. Use Step failed, or confirm to continue testing. The package will not be marked validated."
+
+        $installSucceeded = ($step -eq 'install') -and (Test-WingetterInstallExitSuccess -ExitCode $status.exitCode) -and (-not $silentUi)
+
+        if ($step -eq 'install' -and $installSucceeded) {
+            Complete-SandboxSilentSwitchSuccess -DialogState $ui -ExitCode $status.exitCode
+            $ui.StepStates[$step] = 'Awaiting'
+            $ui.ConfirmButton.IsEnabled = $true
+            $ui.FailButton.IsEnabled = $true
+            if (-not $ui.SilentRetry -or -not $ui.SilentRetry.Persisted) {
+                $ui.StepDetails[$step] = "$exitLabel$($status.message) Confirm this step in Wingetter to continue."
+                $ui.StatusText.Text = "Confirm $step, then the next script will run."
+            }
+        } elseif ($step -eq 'install' -and -not $installSucceeded -and $ui.SilentRetry -and $ui.SilentRetry.Active) {
+            $ui.StepDetails[$step] = "$exitLabel$($status.message)"
+            if (Start-SandboxSilentSwitchRetry -DialogState $ui) {
+                Update-SandboxDialogStepList
+                return
+            }
+            $ui.StepStates[$step] = 'Awaiting'
+            $ui.ConfirmButton.IsEnabled = $true
+            $ui.FailButton.IsEnabled = $true
+            if ($silentUi) {
+                $ui.StatusText.Text = 'NOT SILENT after trying all switch candidates. Use Step failed, or confirm to continue testing.'
+            }
         } else {
-            $ui.StatusText.Text = "Confirm $step, then the next script will run."
+            $ui.StepStates[$step] = 'Awaiting'
+            $ui.StepDetails[$step] = "$exitLabel$($status.message) Confirm this step in Wingetter to continue."
+            if ($silentUi) {
+                $ui.StatusText.Text = "NOT SILENT: an installer dialog appeared. Use Step failed, or confirm to continue testing. The package will not be marked validated."
+            } else {
+                $ui.StatusText.Text = "Confirm $step, then the next script will run."
+            }
+            $ui.ConfirmButton.IsEnabled = $true
+            $ui.FailButton.IsEnabled = $true
         }
-        $ui.ConfirmButton.IsEnabled = $true
-        $ui.FailButton.IsEnabled = $true
     }
 
     Update-SandboxDialogStepList
@@ -594,10 +778,18 @@ function Show-WingetterSandboxTestDialog {
         Result = $null
         Report = $null
         LastLog = ''
+        LastHandledStatusAt = $null
+        SilentRetry = $null
     }
 
+    Initialize-SandboxSilentRetryState -DialogState $script:sandboxDialog
     Update-SandboxDialogStepList
-    $statusText.Text = 'Starting Windows Sandbox and running install.ps1...'
+    if ($script:sandboxDialog.SilentRetry -and $script:sandboxDialog.SilentRetry.Candidates.Count -gt 1) {
+        $first = [string]$script:sandboxDialog.SilentRetry.Candidates[0]
+        $statusText.Text = "Starting Windows Sandbox and running install.ps1 (silent switch: $first). Failed switches will be retried automatically."
+    } else {
+        $statusText.Text = 'Starting Windows Sandbox and running install.ps1...'
+    }
 
     $sandboxTimer = New-Object System.Windows.Threading.DispatcherTimer
     $sandboxTimer.Interval = [TimeSpan]::FromMilliseconds(500)

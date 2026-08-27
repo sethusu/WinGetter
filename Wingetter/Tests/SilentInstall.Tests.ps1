@@ -113,6 +113,26 @@ Describe 'Get-WingetterSilentInstallPlan' {
         $plan.Verified | Should -Be $true
     }
 
+    It 'Adds /currentuser for NsisMultiUser User_ installers like RStudio' {
+        $plan = Get-WingetterSilentInstallPlan `
+            -InstallerFileName 'RStudio_2026.08.1+195_User_X64_nullsoft_en-US.exe' `
+            -InstallerExtension '.exe' `
+            -InstallerType 'nullsoft' `
+            -SilentSwitch '/S'
+        $plan.Engine | Should -Be 'nsis'
+        $plan.Arguments | Should -Be '/S /currentuser'
+        $plan.Command | Should -Be '"RStudio_2026.08.1+195_User_X64_nullsoft_en-US.exe" /S /currentuser'
+        $plan.ArgumentSource | Should -Be 'winget-silent-plus-scope'
+    }
+
+    It 'Adds /allusers for Machine_ Nullsoft installers' {
+        $plan = Get-WingetterSilentInstallPlan `
+            -InstallerFileName 'App_Machine_X64_nullsoft_en-US.exe' `
+            -InstallerExtension '.exe' `
+            -InstallerType 'nullsoft'
+        $plan.Arguments | Should -Be '/S /allusers'
+    }
+
     It 'Probes installer bytes for Inno Setup' {
         $temp = Join-Path ([System.IO.Path]::GetTempPath()) ("wingetter-inno-{0}.exe" -f ([Guid]::NewGuid().ToString('N')))
         try {
@@ -153,6 +173,76 @@ Installer Switches:
             param($ShowText)
             Get-WingetSilentSwitchFromShowText -Text $ShowText | Should -Be '/S'
         }
+    }
+}
+
+Describe 'Get-WingetterSilentSwitchCandidates' {
+    It 'Prefers /currentuser then /allusers for RStudio User_ NSIS packages' {
+        $candidates = Get-WingetterSilentSwitchCandidates `
+            -Engine 'nsis' `
+            -InstallerFileName 'RStudio_2026.08.1+195_User_X64_nullsoft_en-US.exe' `
+            -CurrentArguments '/S' `
+            -WingetSilentSwitch '/S'
+        $candidates[0] | Should -Be '/S'
+        $candidates | Should -Contain '/S /currentuser'
+        $candidates | Should -Contain '/S /allusers'
+        ([array]::IndexOf([string[]]$candidates, '/S /currentuser')) | Should -BeLessThan ([array]::IndexOf([string[]]$candidates, '/S /allusers'))
+    }
+}
+
+Describe 'Update-WingetterPackagedSilentInstall' {
+    It 'Rewrites install.ps1, silent-switches.json, and app.json with the winning switch' {
+        $temp = Join-Path ([System.IO.Path]::GetTempPath()) ("wingetter-silent-update-{0}" -f ([Guid]::NewGuid().ToString('N')))
+        New-Item -ItemType Directory -Path $temp -Force | Out-Null
+        try {
+            $exeName = 'RStudio_2026.08.1+195_User_X64_nullsoft_en-US.exe'
+            Set-Content -LiteralPath (Join-Path $temp $exeName) -Value 'MZ NullsoftInst' -Encoding ASCII
+            @"
+`$installCommand = @'
+"$exeName" /S
+'@
+"@ | Set-Content -LiteralPath (Join-Path $temp 'install.ps1') -Encoding UTF8
+            @{
+                packageIdentifier = 'Posit.RStudio'
+                displayName = 'RStudio'
+                version = '2026.08.1+195'
+                silentInstallCommand = "`"$exeName`" /S"
+                silentInstallVerified = $false
+                installerEngine = 'nsis'
+            } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $temp 'app.json') -Encoding UTF8
+
+            $result = Update-WingetterPackagedSilentInstall `
+                -VersionDirectory $temp `
+                -Arguments '/S /currentuser' `
+                -Engine 'nsis' `
+                -ArgumentSource 'sandbox-retry'
+
+            $result.Command | Should -Be "`"$exeName`" /S /currentuser"
+            $packaged = InModuleScope Wingetter -Parameters @{ Dir = $temp } {
+                param($Dir)
+                Get-WingetterInstallCommandFromScript -ScriptPath (Join-Path $Dir 'install.ps1')
+            }
+            $packaged | Should -Be "`"$exeName`" /S /currentuser"
+            $manifest = Get-Content -LiteralPath (Join-Path $temp 'silent-switches.json') -Raw | ConvertFrom-Json
+            $manifest.arguments | Should -Be '/S /currentuser'
+            $manifest.argumentSource | Should -Be 'sandbox-retry'
+            $manifest.verified | Should -Be $true
+            $app = Get-Content -LiteralPath (Join-Path $temp 'app.json') -Raw | ConvertFrom-Json
+            $app.silentInstallCommand | Should -Be "`"$exeName`" /S /currentuser"
+            $app.silentInstallVerified | Should -Be $true
+        } finally {
+            Remove-Item -LiteralPath $temp -Recurse -Force
+        }
+    }
+}
+
+Describe 'Test-WingetterInstallExitSuccess' {
+    It 'Treats 0, 3010, and 1641 as success' {
+        Test-WingetterInstallExitSuccess -ExitCode 0 | Should -Be $true
+        Test-WingetterInstallExitSuccess -ExitCode 3010 | Should -Be $true
+        Test-WingetterInstallExitSuccess -ExitCode 1641 | Should -Be $true
+        Test-WingetterInstallExitSuccess -ExitCode 666660 | Should -Be $false
+        Test-WingetterInstallExitSuccess -ExitCode 1603 | Should -Be $false
     }
 }
 

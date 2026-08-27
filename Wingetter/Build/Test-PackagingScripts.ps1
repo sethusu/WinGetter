@@ -187,8 +187,11 @@ if (-not (Test-Path -LiteralPath $silentScript)) {
     $silentText = Get-Content -LiteralPath $silentScript -Raw
     foreach ($needle in @(
             'Get-WingetterSilentInstallPlan'
+            'Get-WingetterSilentSwitchCandidates'
+            'Update-WingetterPackagedSilentInstall'
             '/VERYSILENT'
             '/LANG=english'
+            '/currentuser'
             'Test-WingetterSilentSwitchAdequacy'
         )) {
         if ($silentText -notmatch [regex]::Escape($needle)) {

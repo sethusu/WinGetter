@@ -630,17 +630,55 @@ function Write-Status {
     }
 }
 
-function Read-CommandAction {
+function Read-Command {
     if (-not (Test-Path -LiteralPath $commandPath)) {
         return $null
     }
     try {
         $raw = Get-Content -LiteralPath $commandPath -Raw
         if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
-        $cmd = $raw | ConvertFrom-Json
-        return [string]$cmd.action
+        return ($raw | ConvertFrom-Json)
     } catch {
         return $null
+    }
+}
+
+function Set-LocalInstallCommandOverride {
+    param([string]$Command)
+    $path = Join-Path $packageRoot 'install.ps1'
+    if (-not (Test-Path -LiteralPath $path)) {
+        throw "install.ps1 not found at $path"
+    }
+    $raw = Get-Content -LiteralPath $path -Raw -ErrorAction Stop
+    if ($raw -notmatch '(?s)\$installCommand = @''') {
+        throw 'install.ps1 does not contain an $installCommand here-string to override.'
+    }
+    $nl = [Environment]::NewLine
+    $replacement = ('$installCommand = @''' + $nl + $Command + $nl + '''@')
+    $updated = [regex]::Replace($raw, '(?s)\$installCommand = @''.*?''@', $replacement, 1)
+    if ($updated -eq $raw) {
+        throw 'Failed to patch install.ps1 install command override.'
+    }
+    Set-Content -LiteralPath $path -Value $updated -Encoding UTF8
+    Write-GuestLog ("Applied install command override: {0}" -f $Command)
+}
+
+function Invoke-BestEffortCleanupBeforeRetry {
+    $scriptPath = Join-Path $packageRoot 'uninstall.ps1'
+    if (-not (Test-Path -LiteralPath $scriptPath)) {
+        return
+    }
+    Write-GuestLog 'Best-effort uninstall before silent-switch retry'
+    try {
+        $proc = Start-Process -FilePath 'powershell.exe' -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $scriptPath) -PassThru -NoNewWindow -WindowStyle Hidden
+        if (-not $proc.WaitForExit(120000)) {
+            Stop-ProcessTree -Id $proc.Id
+            Write-GuestLog 'Best-effort uninstall timed out after 120 seconds'
+        } else {
+            Write-GuestLog ("Best-effort uninstall finished with exit code {0}" -f $proc.ExitCode)
+        }
+    } catch {
+        Write-GuestLog "Best-effort uninstall failed: $_"
     }
 }
 
@@ -1023,14 +1061,33 @@ Write-GuestLog 'Windows Sandbox guest coordinator is ready.'
 Write-Heartbeat
 Write-Status -Step 'idle' -State 'waiting' -Message 'Waiting for the first test command from Wingetter.'
 
-$lastAction = ''
+$lastIssuedAt = ''
 while ($true) {
     Write-Heartbeat
-    $action = Read-CommandAction
-    if ($action -and $action -ne $lastAction) {
-        $lastAction = $action
+    $cmd = Read-Command
+    if ($cmd -and $cmd.issuedAt -and ([string]$cmd.issuedAt -ne $lastIssuedAt)) {
+        $lastIssuedAt = [string]$cmd.issuedAt
+        $action = [string]$cmd.action
         switch ($action) {
-            'install' { Invoke-PackageStep -Step 'install' }
+            'install' {
+                try {
+                    if ($cmd.PSObject.Properties['installOverride'] -and $cmd.installOverride) {
+                        Set-LocalInstallCommandOverride -Command ([string]$cmd.installOverride)
+                    }
+                    $attempt = 1
+                    if ($cmd.PSObject.Properties['attempt'] -and $cmd.attempt) {
+                        try { $attempt = [int]$cmd.attempt } catch { $attempt = 1 }
+                    }
+                    if ($attempt -gt 1) {
+                        Invoke-BestEffortCleanupBeforeRetry
+                    }
+                } catch {
+                    Write-GuestLog "Install override failed: $_"
+                    Write-Status -Step 'install' -State 'failed' -ExitCode 1 -Message ("Install override failed: {0}" -f $_)
+                    continue
+                }
+                Invoke-PackageStep -Step 'install'
+            }
             'detect' { Invoke-PackageStep -Step 'detect' }
             'uninstall' { Invoke-PackageStep -Step 'uninstall' }
             'shutdown' {
@@ -1187,14 +1244,23 @@ function Set-WingetterSandboxCommand {
         [string]$HandshakeDirectory,
         [Parameter(Mandatory = $true)]
         [ValidateSet('install', 'detect', 'uninstall', 'shutdown', 'idle')]
-        [string]$Action
+        [string]$Action,
+        [string]$InstallOverride,
+        [int]$Attempt = 0
     )
 
     $path = Join-Path $HandshakeDirectory 'command.json'
-    Write-WingetterSandboxJson -Path $path -Object @{
+    $payload = @{
         action   = $Action
         issuedAt = (Get-Date).ToUniversalTime().ToString('o')
     }
+    if ($Attempt -gt 0) {
+        $payload.attempt = [int]$Attempt
+    }
+    if (-not [string]::IsNullOrWhiteSpace($InstallOverride)) {
+        $payload.installOverride = $InstallOverride
+    }
+    Write-WingetterSandboxJson -Path $path -Object $payload
 }
 
 function Get-WingetterSandboxStatus {
