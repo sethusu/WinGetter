@@ -130,7 +130,10 @@ function Invoke-WingetterPackaging {
             }
 
             try {
-                & $contentPrepPath -c $versionDirectory -s $installerFile.Name -o $outputDirectory -q
+                # Capture native stdout/stderr so it does not pollute the PowerShell
+                # success stream (GUI EndInvoke would otherwise receive a collection and
+                # fail when applying a selected icon: "property 'IconFile' cannot be found").
+                $null = & $contentPrepPath -c $versionDirectory -s $installerFile.Name -o $outputDirectory -q 2>&1
                 if ($LASTEXITCODE -eq 0 -and (Test-Path $intunewinFile)) {
                     $packagingSucceeded = $true
                     $intunewinSize = [math]::Round((Get-Item $intunewinFile).Length / 1MB, 2)
@@ -181,4 +184,44 @@ function Invoke-WingetterPackaging {
         Write-WingetterProgress -Step 0 -TotalSteps $totalSteps -StepName 'Failed' -Percent 0 -Message $_.Exception.Message -Status Failed -OnProgress $OnProgress
         throw
     }
+}
+
+function Resolve-WingetterPackagingUiResult {
+    <#
+    .SYNOPSIS
+        Picks the real packaging result out of a PowerShell EndInvoke collection.
+    .DESCRIPTION
+        Native tools such as IntuneWinAppUtil write to the success stream. When those
+        strings are mixed with the packaging PSCustomObject, the GUI previously treated
+        the whole collection as $Result and failed with:
+        "The property 'IconFile' cannot be found on this object."
+    #>
+    param($Raw)
+
+    if ($null -eq $Raw) {
+        return $null
+    }
+
+    foreach ($item in @($Raw)) {
+        if ($null -eq $item) { continue }
+        if ($item -is [string]) { continue }
+
+        $props = @()
+        try {
+            $props = @($item.PSObject.Properties.Name)
+        } catch {
+            continue
+        }
+
+        if (($props -contains 'VersionDirectory') -and ($props -contains 'PackageId')) {
+            return $item
+        }
+    }
+
+    $items = @($Raw)
+    if ($items.Count -eq 1) {
+        return $items[0]
+    }
+
+    throw "Packaging finished but the UI could not read the packaging result (received $($items.Count) pipeline object(s))."
 }

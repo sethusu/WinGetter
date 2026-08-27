@@ -146,6 +146,9 @@ foreach ($needle in @(
         'CopyReportButton'
         'Write-WingetterSandboxTestReport'
         'Resolve-WingetterSandboxStepStatus'
+        'Resolve-WingetterPackagingUiResult'
+        'Update-WingetterPackageIconSelection'
+        'Invoke-PostPackagingIconSelection'
     )) {
     if ($gui -notmatch [regex]::Escape($needle)) {
         $failures += "Gui\Start-WingetterGui.ps1 missing expected content: $needle"

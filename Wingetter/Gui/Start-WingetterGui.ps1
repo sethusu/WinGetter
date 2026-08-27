@@ -983,17 +983,56 @@ function Invoke-PostPackagingIconSelection {
         $LogText
     )
 
-    if ($Result.UsedCustomIcon) { return $Result }
-    if (-not $Result.IconCandidates -or $Result.IconCandidates.Count -lt 2) { return $Result }
-    if (-not $Result.LogoFile -or -not $Result.IconFile) { return $Result }
+    if (-not $Result) { return $Result }
+    if ($Result.PSObject.Properties['UsedCustomIcon'] -and $Result.UsedCustomIcon) { return $Result }
 
-    $selected = Show-WingetterIconPickerDialog -Candidates $Result.IconCandidates `
+    $candidates = @()
+    if ($Result.PSObject.Properties['IconCandidates'] -and $Result.IconCandidates) {
+        $candidates = @($Result.IconCandidates)
+    }
+    if ($candidates.Count -lt 2) { return $Result }
+
+    $versionDirectory = $null
+    if ($Result.PSObject.Properties['VersionDirectory']) {
+        $versionDirectory = [string]$Result.VersionDirectory
+    }
+    if (-not $versionDirectory) { return $Result }
+
+    $iconFile = $null
+    $logoFile = $null
+    if ($Result.PSObject.Properties['IconFile'] -and $Result.IconFile) {
+        $iconFile = [string]$Result.IconFile
+    } else {
+        $iconFile = Join-Path $versionDirectory 'icon.png'
+    }
+    if ($Result.PSObject.Properties['LogoFile'] -and $Result.LogoFile) {
+        $logoFile = [string]$Result.LogoFile
+    } else {
+        $logoFile = Join-Path (Split-Path -Path $versionDirectory -Parent) 'logo.png'
+    }
+
+    $selected = Show-WingetterIconPickerDialog -Candidates $candidates `
         -DisplayName $Result.DisplayName -PackageId $Result.PackageId -OwnerWindow $OwnerWindow
 
-    if ($selected) {
-        Set-WingetterPackageIconFiles -SourceIconPath $selected.Path -LogoFilePath $Result.LogoFile -IconFilePath $Result.IconFile
-        $Result.IconFile = $Result.IconFile
-        Set-IconPreview -ImageControl $IconPreview -StatusControl $IconStatus -ImagePath $Result.IconFile
+    if ($selected -and $selected.Path) {
+        $updated = Update-WingetterPackageIconSelection `
+            -VersionDirectory $versionDirectory `
+            -SourceIconPath $selected.Path `
+            -LogoFilePath $logoFile `
+            -IconFilePath $iconFile
+
+        if ($Result.PSObject.Properties['IconFile']) {
+            $Result.IconFile = $updated.IconFile
+        } else {
+            $Result | Add-Member -NotePropertyName IconFile -NotePropertyValue $updated.IconFile -Force
+        }
+        if ($Result.PSObject.Properties['LogoFile']) {
+            $Result.LogoFile = $updated.LogoFile
+        } else {
+            $Result | Add-Member -NotePropertyName LogoFile -NotePropertyValue $updated.LogoFile -Force
+        }
+
+        Set-IconPreview -ImageControl $IconPreview -StatusControl $IconStatus -ImagePath $updated.IconFile
         Add-LogLine -LogControl $LogText -Message "Applied selected icon from $($selected.Source): $($selected.Url)"
     } else {
         Add-LogLine -LogControl $LogText -Message 'Kept the default icon candidate from packaging.'
@@ -1796,10 +1835,8 @@ function Start-WingetterPackagingFromUi {
 
             $worker = $script:packWorker
             try {
-                $result = $worker.PowerShell.EndInvoke($worker.AsyncResult)
-                if ($result -is [array] -and $result.Count -eq 1) {
-                    $result = $result[0]
-                }
+                $rawResult = $worker.PowerShell.EndInvoke($worker.AsyncResult)
+                $result = Resolve-WingetterPackagingUiResult -Raw $rawResult
                 Complete-WingetterPackaging -Result $result
             } catch {
                 Complete-WingetterPackaging -ErrorRecord $_
