@@ -27,6 +27,7 @@ $required = @(
     (Join-Path $PSScriptRoot 'Build-WingetterExe.ps1')
     (Join-Path $root 'Gui\Start-WingetterGui.ps1')
     (Join-Path $root 'Gui\Wingetter.SandboxTestDialog.xaml')
+    (Join-Path $root 'Gui\Wingetter.SilentSwitchRetryDialog.xaml')
     (Join-Path $root 'Wingetter.psd1')
 )
 
@@ -149,6 +150,9 @@ foreach ($needle in @(
         'Resolve-WingetterPackagingUiResult'
         'Update-WingetterPackageIconSelection'
         'Invoke-PostPackagingIconSelection'
+        'TryAgainButton'
+        'Show-WingetterSilentSwitchRetryDialog'
+        'Invoke-SandboxTryAgainFromUi'
     )) {
     if ($gui -notmatch [regex]::Escape($needle)) {
         $failures += "Gui\Start-WingetterGui.ps1 missing expected content: $needle"
@@ -191,6 +195,7 @@ if (-not (Test-Path -LiteralPath $silentScript)) {
     foreach ($needle in @(
             'Get-WingetterSilentInstallPlan'
             'Get-WingetterSilentSwitchCandidates'
+            'Get-WingetterSilentSwitchCandidateInfo'
             'Update-WingetterPackagedSilentInstall'
             '/VERYSILENT'
             '/LANG=english'

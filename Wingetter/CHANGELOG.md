@@ -1,5 +1,13 @@
 # Wingetter Changelog
 
+## Version 2.5.2 - 2026-08-27
+
+### Sandbox Try again silent switches
+- After a verified silent-install failure, **Try again...** opens a dialog listing standard switches for the detected installer engine (NSIS/NsisMultiUser, Inno, MSI, WiX Burn, InstallShield, Advanced Installer, unknown EXE)
+- Already-tried switches are shown but disabled; picking another re-runs install in the same sandbox via `installOverride`
+- The switch that succeeds is still saved permanently to `install.ps1` / `silent-switches.json` / `app.json`
+- Removed invisible automatic retries so the first failure is visible before you choose the next switch
+
 ## Version 2.5.1 - 2026-08-27
 
 ### Icon picker after packaging

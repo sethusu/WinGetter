@@ -190,6 +190,49 @@ Describe 'Get-WingetterSilentSwitchCandidates' {
     }
 }
 
+Describe 'Get-WingetterSilentSwitchCandidateInfo' {
+    It 'Returns labeled NSIS MultiUser candidates with Display text' {
+        $info = Get-WingetterSilentSwitchCandidateInfo `
+            -Engine 'nsis' `
+            -InstallerFileName 'RStudio_2026.08.1+195_User_X64_nullsoft_en-US.exe' `
+            -CurrentArguments '/S' `
+            -WingetSilentSwitch '/S'
+        $info.Count | Should -BeGreaterThan 2
+        $info[0].Arguments | Should -Be '/S'
+        $info[0].Label | Should -Match 'Packaged'
+        $info[0].Display | Should -Match '/S'
+        ($info | Where-Object { $_.Arguments -eq '/S /currentuser' }).Label | Should -Match 'per-user'
+        ($info | Where-Object { $_.Arguments -eq '/S /allusers' }).Description | Should -Match 'elevation'
+    }
+
+    It 'Returns Inno language-aware candidates for Try again UI' {
+        $info = Get-WingetterSilentSwitchCandidateInfo `
+            -Engine 'inno' `
+            -InstallerFileName 'setup.exe' `
+            -CurrentArguments '/VERYSILENT /NORESTART /SUPPRESSMSGBOXES /SP-'
+        ($info | Where-Object { $_.Arguments -match 'LANG=english' }).Count | Should -BeGreaterThan 0
+        ($info | ForEach-Object { $_.Arguments }) | Should -Contain '/VERYSILENT /NORESTART /SUPPRESSMSGBOXES /SP- /LANG=english'
+    }
+
+    It 'Returns MSI quiet candidates' {
+        $info = Get-WingetterSilentSwitchCandidateInfo `
+            -Engine 'msi' `
+            -InstallerFileName 'app.msi' `
+            -CurrentArguments '/quiet /norestart'
+        ($info | ForEach-Object { $_.Arguments }) | Should -Contain '/qn /norestart'
+        ($info | ForEach-Object { $_.Label }) | Should -Contain 'MSI /qn'
+    }
+
+    It 'Deduplicates CurrentArguments against engine defaults' {
+        $info = Get-WingetterSilentSwitchCandidateInfo `
+            -Engine 'nsis' `
+            -InstallerFileName 'App_User_X64.exe' `
+            -CurrentArguments '/S /currentuser'
+        @($info | Where-Object { $_.Arguments -eq '/S /currentuser' }).Count | Should -Be 1
+        $info[0].Arguments | Should -Be '/S /currentuser'
+    }
+}
+
 Describe 'Update-WingetterPackagedSilentInstall' {
     It 'Rewrites install.ps1, silent-switches.json, and app.json with the winning switch' {
         $temp = Join-Path ([System.IO.Path]::GetTempPath()) ("wingetter-silent-update-{0}" -f ([Guid]::NewGuid().ToString('N')))

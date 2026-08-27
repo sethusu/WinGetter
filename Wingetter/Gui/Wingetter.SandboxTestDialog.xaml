@@ -1,8 +1,8 @@
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Test in Windows Sandbox"
-        Height="560" Width="720"
-        MinHeight="480" MinWidth="640"
+        Height="560" Width="760"
+        MinHeight="480" MinWidth="680"
         WindowStartupLocation="CenterOwner"
         ResizeMode="CanResizeWithGrip"
         Background="#F5F7FA">
@@ -57,8 +57,10 @@
 
     <DockPanel Grid.Row="4" Margin="0,14,0,0">
       <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-        <Button x:Name="CancelButton" Content="Cancel" Width="100" Height="32" Margin="0,0,8,0"/>
-        <Button x:Name="FailButton" Content="Step failed" Width="110" Height="32" Margin="0,0,8,0" IsEnabled="False"/>
+        <Button x:Name="CancelButton" Content="Cancel" Width="90" Height="32" Margin="0,0,8,0"/>
+        <Button x:Name="FailButton" Content="Step failed" Width="100" Height="32" Margin="0,0,8,0" IsEnabled="False"/>
+        <Button x:Name="TryAgainButton" Content="Try again..." Width="110" Height="32" Margin="0,0,8,0" IsEnabled="False"
+                ToolTip="After a failed silent install, pick a different silent switch for this installer engine and re-run install in the same sandbox."/>
         <Button x:Name="ConfirmButton" Content="Confirm this step" Width="150" Height="32" FontWeight="SemiBold" IsEnabled="False"/>
       </StackPanel>
       <Button x:Name="CopyReportButton" Content="Copy report" Width="120" Height="32" HorizontalAlignment="Left"
