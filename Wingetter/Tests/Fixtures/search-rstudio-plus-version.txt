@@ -1,0 +1,5 @@
+Name                   Id                         Version        Match       Source
+-----------------------------------------------------------------------------------
+RStudio                Posit.RStudio              2025.05.1+513              winget
+R for Windows          RProject.R                 4.5.1                      winget
+RStudio Desktop        XP8K0HZR1F1JZR             Unknown                    msstore
