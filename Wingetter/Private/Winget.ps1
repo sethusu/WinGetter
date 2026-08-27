@@ -3,6 +3,11 @@
 # misread as curly quotes that terminate strings and break regex quantifiers ({2,}).
 $script:WingetEllipsisChar = [char]0x2026
 $script:WingetProgressLinePattern = '[{0}{1}]|\bKB\b|\bMB\b|%' -f [char]0x2588, [char]0x2592
+# Winget PackageVersion values are often SemVer-like and may include build metadata
+# after '+', e.g. Posit.RStudio 2025.05.1+513. Every version token pattern must allow '+'.
+$script:WingetVersionCharClass = '0-9A-Za-z.<>=_+\-'
+$script:WingetVersionTokenPattern = '[0-9A-Za-z.<>=_+-]+'
+$script:WingetVersionCapturePattern = '([0-9]+(?:[.+-][0-9A-Za-z_+-]+)+)'
 
 function Test-WingetTruncatedId {
     param(
@@ -173,7 +178,7 @@ function Test-WingetSearchRow {
         return $false
     }
 
-    if ($Version -and $Version -notmatch '^[0-9A-Za-z.<>=\s_-]+$') {
+    if ($Version -and $Version -notmatch ('^[' + $script:WingetVersionCharClass + '\s]+$')) {
         return $false
     }
 
@@ -309,7 +314,8 @@ function Parse-WingetSearchResults {
 
         if (-not (Test-WingetSearchRow -Name $name -Id $id -Version $version)) {
             # Fallback for misaligned columns: Name / Id / Version with 2+ spaces
-            if ($line -match '^\s*(.+?)\s{2,}([^\s]{2,}?)\s{2,}([0-9A-Za-z.<>=][0-9A-Za-z.<>=\s_-]*)') {
+            $fallbackPattern = '^\s*(.+?)\s{2,}([^\s]{2,}?)\s{2,}([' + $script:WingetVersionCharClass + '][' + $script:WingetVersionCharClass + '\s]*)'
+            if ($line -match $fallbackPattern) {
                 $name = $matches[1].Trim()
                 $id = Normalize-WingetPackageId -Id $matches[2].Trim()
                 $version = $matches[3].Trim()
@@ -319,15 +325,16 @@ function Parse-WingetSearchResults {
             }
         }
 
-        # Recover full version when column width truncates/overflows (common with Match column)
-        if ($id -and $line -match ('(?i)' + [regex]::Escape($id) + '\s+([0-9]+(?:\.[0-9A-Za-z_-]+)+)')) {
+        # Recover full version when column width truncates/overflows (common with Match column).
+        # Include '+' so build metadata versions like 2025.05.1+513 are not truncated to 2025.05.1.
+        if ($id -and $line -match ('(?i)' + [regex]::Escape($id) + '\s+' + $script:WingetVersionCapturePattern)) {
             $version = $matches[1].Trim()
         } elseif ($version -match '^(Moniker|Tag|ProductCode):') {
             $version = 'Unknown'
         } else {
             $version = ($version -split '\s{2,}')[0].Trim()
             # Strip trailing match labels that spilled into Version
-            if ($version -match '^(?<ver>[0-9][0-9A-Za-z.-]*)\s+(Moniker|Tag|ProductCode):') {
+            if ($version -match ('^(?<ver>' + $script:WingetVersionTokenPattern + ')\s+(Moniker|Tag|ProductCode):')) {
                 $version = $matches['ver']
             }
         }
@@ -622,8 +629,8 @@ function Parse-WingetSearchResultsLoose {
         if ($line -match '^\s*Name\s+Id\s+Version') { continue }
         if ($line -match '^-+$') { continue }
 
-        # Publisher.Package Id with a version somewhere after it
-        if ($line -match '(?i)\b([A-Za-z0-9][A-Za-z0-9_-]*\.[A-Za-z0-9][A-Za-z0-9._-]*)\b.*?\b(\d+(?:\.\d+[0-9A-Za-z_-]*)+)\b') {
+        # Publisher.Package Id with a version somewhere after it (allow '+' build metadata)
+        if ($line -match ('(?i)\b([A-Za-z0-9][A-Za-z0-9_-]*\.[A-Za-z0-9][A-Za-z0-9._-]*)\b.*?\b' + $script:WingetVersionCapturePattern + '\b')) {
             $id = Normalize-WingetPackageId -Id $matches[1]
             $version = $matches[2]
             $name = $line.Substring(0, $line.IndexOf($matches[1])).Trim()
@@ -641,7 +648,7 @@ function Parse-WingetSearchResultsLoose {
             $name = $line.Substring(0, $line.IndexOf($id)).Trim()
             if ([string]::IsNullOrWhiteSpace($name)) { $name = $id }
             $version = 'Unknown'
-            if ($line -match '\b(\d+(?:\.\d+[0-9A-Za-z_-]*)+)\b') {
+            if ($line -match ('\b' + $script:WingetVersionCapturePattern + '\b')) {
                 $version = $matches[1]
             }
             $source = Get-WingetSourceFromSearchLine -Line $line -DefaultSource $(if ($DefaultSource) { $DefaultSource } else { 'msstore' })
@@ -866,33 +873,49 @@ function Get-WingetPackageDetails {
         $attemptSources.Add('')
     }
 
+    # Prefer the caller version, then retry without --version. Search table parsing
+    # historically truncated SemVer build metadata (2025.05.1+513 -> 2025.05.1),
+    # which makes winget return APPINSTALLER_CLI_ERROR_NO_MANIFEST_FOUND (-1978335209).
+    $attemptVersions = [System.Collections.Generic.List[string]]::new()
+    if ($Version) {
+        $attemptVersions.Add($Version)
+    }
+    if (-not ($attemptVersions -contains '')) {
+        $attemptVersions.Add('')
+    }
+
     $result = $null
     $appInfo = $null
     $hasAppInfo = $false
     $usedSource = ''
+    $usedVersion = ''
+    $resolved = $false
 
-    foreach ($attemptSource in $attemptSources) {
-        $result = Invoke-WingetShowForPackageDetails -PackageId $PackageId -Version $Version -Source $attemptSource
-        $appInfo = $result.Output
-        $hasAppInfo = [bool]($appInfo | Select-String -Pattern 'Found.*\[|Version:\s+|Publisher:\s+' -Quiet)
-        $usedSource = $attemptSource
+    foreach ($attemptVersion in $attemptVersions) {
+        foreach ($attemptSource in $attemptSources) {
+            $result = Invoke-WingetShowForPackageDetails -PackageId $PackageId -Version $attemptVersion -Source $attemptSource
+            $appInfo = $result.Output
+            $hasAppInfo = [bool]($appInfo | Select-String -Pattern 'Found.*\[|Version:\s+|Publisher:\s+' -Quiet)
+            $usedSource = $attemptSource
+            $usedVersion = $attemptVersion
 
-        if ($result.ExitCode -eq 0 -or $hasAppInfo) {
-            break
+            if ($result.ExitCode -eq 0 -or $hasAppInfo) {
+                $resolved = $true
+                break
+            }
         }
 
-        # Retry without --source when winget rejects the source name, or for any
-        # scoped failure (unscoped retry is the final attempt in the list).
-        if ($attemptSource) {
-            continue
+        if ($resolved) {
+            break
         }
     }
 
-    if ($result.ExitCode -ne 0 -and -not $hasAppInfo) {
+    if (-not $resolved -or ($result.ExitCode -ne 0 -and -not $hasAppInfo)) {
         $meaning = Get-WingetExitCodeDescription -ExitCode ([int]$result.ExitCode)
         $detail = if ($meaning) { " -- $meaning" } else { '' }
         $sourceNote = if ($Source) { " (requested source '$Source')" } else { '' }
-        throw "Failed to get app information from Winget (exit code: $($result.ExitCode))$detail$sourceNote."
+        $versionNote = if ($Version) { " (requested version '$Version')" } else { '' }
+        throw "Failed to get app information from Winget (exit code: $($result.ExitCode))$detail$sourceNote$versionNote."
     }
 
     $lines = ConvertTo-WingetOutputLines -Output $appInfo
@@ -900,7 +923,7 @@ function Get-WingetPackageDetails {
 
     $packageId = if ($text -match 'Found .+? \[(.+?)\]') { Normalize-WingetPackageId -Id $matches[1].Trim() } else { $PackageId }
     $displayName = if ($text -match 'Found (.+?) \[') { $matches[1].Trim() } else { $PackageId }
-    $foundVersion = if ($text -match 'Version:\s+(.+)') { ($text | Select-String -Pattern 'Version:\s+(.+)' | Select-Object -First 1).Matches.Groups[1].Value.Trim() } else { $Version }
+    $foundVersion = if ($text -match 'Version:\s+(.+)') { ($text | Select-String -Pattern 'Version:\s+(.+)' | Select-Object -First 1).Matches.Groups[1].Value.Trim() } else { $null }
     $publisher = if ($text -match 'Publisher:\s+(.+)') { ($text | Select-String -Pattern 'Publisher:\s+(.+)' | Select-Object -First 1).Matches.Groups[1].Value.Trim() } else { 'Unknown' }
     $homepage = if ($text -match 'Homepage:\s+(.+)') { ($text | Select-String -Pattern 'Homepage:\s+(.+)' | Select-Object -First 1).Matches.Groups[1].Value.Trim() } else { '' }
     $packageSource = if ($text -match 'Source:\s+(.+)') {
@@ -935,18 +958,22 @@ function Get-WingetPackageDetails {
 
     $silentSwitch = Get-WingetSilentSwitchFromShowText -Text $text
 
-    if (-not $foundVersion) {
-        throw 'Could not determine version from Winget output.'
+    # Only pin the caller version when winget accepted that exact --version.
+    # If we fell back to an unversioned show, keep the version from the manifest.
+    if ($usedVersion) {
+        $resolvedVersion = $usedVersion
+    } else {
+        $resolvedVersion = $foundVersion
     }
 
-    if ($Version -and $foundVersion -ne $Version) {
-        $foundVersion = $Version
+    if (-not $resolvedVersion) {
+        throw 'Could not determine version from Winget output.'
     }
 
     return [PSCustomObject]@{
         PackageId = $packageId
         DisplayName = $displayName
-        Version = $foundVersion
+        Version = $resolvedVersion
         Publisher = $publisher
         Description = $description
         Homepage = $homepage

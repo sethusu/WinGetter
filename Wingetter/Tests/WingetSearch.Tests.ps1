@@ -174,6 +174,27 @@ Example App              Contoso.Example           1.2.3
         $packages[0].Id | Should -Be 'Google.Chrome'
         $packages[0].Source | Should -Be 'winget'
     }
+
+    It 'Keeps SemVer build metadata (+N) used by RStudio versions' {
+        $fixture = Get-Content -Path (Join-Path $script:fixtureRoot 'search-rstudio-plus-version.txt') -Raw
+        $packages = InModuleScope Wingetter -Parameters @{ Fixture = $fixture } {
+            param($Fixture)
+            Parse-WingetSearchResults -SearchOutput $Fixture
+        }
+
+        $rstudio = $packages | Where-Object { $_.Id -eq 'Posit.RStudio' } | Select-Object -First 1
+        $rstudio | Should -Not -BeNullOrEmpty
+        $rstudio.Version | Should -Be '2025.05.1+513'
+        $rstudio.Source | Should -Be 'winget'
+        ($packages | Where-Object { $_.Id -eq 'RProject.R' }).Version | Should -Be '4.5.1'
+    }
+
+    It 'Accepts plus-build versions in Test-WingetSearchRow' {
+        InModuleScope Wingetter {
+            Test-WingetSearchRow -Name 'RStudio' -Id 'Posit.RStudio' -Version '2025.05.1+513' | Should -Be $true
+            Test-WingetSearchRow -Name 'RStudio' -Id 'Posit.RStudio' -Version '2024.09.1+394' | Should -Be $true
+        }
+    }
 }
 
 Describe 'Sort-WingetPackageMatches' {
@@ -334,6 +355,45 @@ Describe 'Get-WingetPackageDetails source fallback' {
         $details.Source | Should -Be 'winget'
     }
 
+    It 'Retries without --version when truncated build metadata yields NO_MANIFEST_FOUND' {
+        $details = InModuleScope Wingetter {
+            Mock Get-WingetConfiguredSources { return @('winget') }
+            Mock Invoke-WingetCli {
+                param($Command, $Arguments)
+                if ($Command -ne 'show') {
+                    return @{ Output = ''; ExitCode = 1; SupportsPackageAgreements = $false }
+                }
+
+                if ($Arguments -contains '--version') {
+                    return @{
+                        Output = 'No manifest found matching the criteria.'
+                        ExitCode = -1978335209
+                        SupportsPackageAgreements = $false
+                    }
+                }
+
+                return @{
+                    Output = @(
+                        'Found RStudio [Posit.RStudio]'
+                        'Version: 2025.05.1+513'
+                        'Publisher: Posit Software, PBC'
+                        'Homepage: https://posit.co/products/open-source/rstudio/'
+                        'Source: winget'
+                    )
+                    ExitCode = 0
+                    SupportsPackageAgreements = $false
+                }
+            }
+
+            # Truncated version from older search parsing (missing +513)
+            Get-WingetPackageDetails -PackageId 'Posit.RStudio' -Version '2025.05.1' -Source 'winget'
+        }
+
+        $details.PackageId | Should -Be 'Posit.RStudio'
+        $details.Version | Should -Be '2025.05.1+513'
+        $details.Source | Should -Be 'winget'
+    }
+
     It 'Skips unknown source names before calling winget show' {
         InModuleScope Wingetter {
             Mock Get-WingetConfiguredSources { return @('winget') }
@@ -362,6 +422,12 @@ Describe 'Get-WingetPackageDetails source fallback' {
     It 'Describes SOURCE_NAME_DOES_NOT_EXIST exit code' {
         InModuleScope Wingetter {
             Get-WingetExitCodeDescription -ExitCode -1978335214 | Should -Be 'The source name does not exist'
+        }
+    }
+
+    It 'Describes NO_MANIFEST_FOUND exit code' {
+        InModuleScope Wingetter {
+            Get-WingetExitCodeDescription -ExitCode -1978335209 | Should -Be 'No manifest found matching the criteria'
         }
     }
 }

@@ -1,5 +1,11 @@
 # Wingetter Changelog
 
+## Version 2.4.2 - 2026-08-27
+
+### Packaging / RStudio versions
+- Fixed packaging failure `exit code: -1978335209 -- No manifest found matching the criteria` for packages whose Winget version includes SemVer build metadata after `+` (notably **Posit.RStudio** `2025.05.1+513`)
+- Search parsing no longer truncates `+N` from versions, and `Get-WingetPackageDetails` retries `winget show` without `--version` when a pinned version has no matching manifest
+
 ## Version 2.4.1 - 2026-08-20
 
 ### Test in Sandbox
