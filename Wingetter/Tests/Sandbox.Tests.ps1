@@ -78,6 +78,10 @@ Describe 'New-WingetterSandboxGuestScript' {
             $script | Should -Match 'Windows PowerShell transcript end'
             $script | Should -Match 'status.ndjson'
             $script | Should -Match 'Ignoring Inno extractor window'
+            $script | Should -Match 'installOverride'
+            $script | Should -Match 'Set-LocalInstallCommandOverride'
+            $script | Should -Match 'issuedAt'
+            $script | Should -Match 'Best-effort uninstall before silent-switch retry'
             $script | Should -Match 'STEP_DONE'
         }
     }
@@ -339,6 +343,22 @@ Describe 'Set-WingetterSandboxCommand' {
             Set-WingetterSandboxCommand -HandshakeDirectory $handshake -Action detect
             $command = Get-Content -LiteralPath (Join-Path $handshake 'command.json') -Raw | ConvertFrom-Json
             $command.action | Should -Be 'detect'
+        } finally {
+            Remove-Item -LiteralPath $handshake -Recurse -Force
+        }
+    }
+
+    It 'Includes installOverride and attempt for silent-switch retries' {
+        $handshake = Join-Path ([System.IO.Path]::GetTempPath()) ("wingetter-sandbox-cmd-{0}" -f ([Guid]::NewGuid().ToString('N')))
+        New-Item -ItemType Directory -Path $handshake -Force | Out-Null
+        try {
+            Set-WingetterSandboxCommand -HandshakeDirectory $handshake -Action install `
+                -InstallOverride '"setup.exe" /S /currentuser' -Attempt 2
+            $command = Get-Content -LiteralPath (Join-Path $handshake 'command.json') -Raw | ConvertFrom-Json
+            $command.action | Should -Be 'install'
+            $command.installOverride | Should -Be '"setup.exe" /S /currentuser'
+            $command.attempt | Should -Be 2
+            $command.issuedAt | Should -Not -BeNullOrEmpty
         } finally {
             Remove-Item -LiteralPath $handshake -Recurse -Force
         }

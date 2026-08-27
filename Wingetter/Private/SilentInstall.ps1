@@ -188,12 +188,50 @@ function Resolve-WingetterInstallerEngine {
     return [PSCustomObject]@{ Engine = 'exe'; Source = 'unknown'; Signature = $null }
 }
 
+function Get-WingetterNsisScopeHint {
+    param([string]$InstallerFileName)
+
+    if ([string]::IsNullOrWhiteSpace($InstallerFileName)) {
+        return ''
+    }
+
+    # Winget often publishes RStudio/DBeaver-style NsisMultiUser builds as User_* or Machine_*.
+    if ($InstallerFileName -match '(?i)(^|[^A-Za-z0-9])User([^A-Za-z0-9]|$)') {
+        return 'currentuser'
+    }
+    if ($InstallerFileName -match '(?i)(Machine|AllUsers)') {
+        return 'allusers'
+    }
+
+    return ''
+}
+
+function Test-WingetterSwitchHasNsisScope {
+    param([string]$SwitchText)
+
+    return (
+        (Test-WingetterSwitchHasToken -SwitchText $SwitchText -Token '/currentuser') -or
+        (Test-WingetterSwitchHasToken -SwitchText $SwitchText -Token '/allusers')
+    )
+}
+
 function Get-WingetterDefaultSilentArguments {
-    param([string]$Engine)
+    param(
+        [string]$Engine,
+        [string]$InstallerFileName
+    )
 
     switch ($Engine) {
         'inno' { return '/VERYSILENT /NORESTART /SUPPRESSMSGBOXES /SP- /LANG=english' }
-        'nsis' { return '/S' }
+        'nsis' {
+            # NsisMultiUser (RStudio, DBeaver, ...) rejects bare /S with exit 666660
+            # ("invalid command-line parameters") unless /currentuser or /allusers is set.
+            $scope = Get-WingetterNsisScopeHint -InstallerFileName $InstallerFileName
+            if ($scope) {
+                return "/S /$scope"
+            }
+            return '/S'
+        }
         'msi' { return '/quiet /norestart' }
         'burn' { return '/quiet /norestart' }
         'wix' { return '/quiet /norestart' }
@@ -202,6 +240,105 @@ function Get-WingetterDefaultSilentArguments {
         'msix' { return '' }
         default { return '/S' }
     }
+}
+
+function Test-WingetterInstallExitSuccess {
+    param($ExitCode)
+
+    if ($null -eq $ExitCode -or "$ExitCode" -eq '') {
+        return $false
+    }
+
+    try {
+        $code = [int]$ExitCode
+    } catch {
+        return $false
+    }
+
+    return ($code -eq 0 -or $code -eq 3010 -or $code -eq 1641)
+}
+
+function Get-WingetterSilentSwitchCandidates {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Engine,
+        [string]$InstallerFileName,
+        [string]$CurrentArguments,
+        [string]$WingetSilentSwitch
+    )
+
+    $candidates = New-Object System.Collections.Generic.List[string]
+
+    $add = {
+        param([string]$Value)
+        $trimmed = if ($null -eq $Value) { '' } else { $Value.Trim() }
+        foreach ($existing in $candidates) {
+            if ([string]::Equals($existing, $trimmed, [StringComparison]::OrdinalIgnoreCase)) {
+                return
+            }
+        }
+        $candidates.Add($trimmed) | Out-Null
+    }
+
+    & $add $CurrentArguments
+
+    switch ($Engine) {
+        'nsis' {
+            $scope = Get-WingetterNsisScopeHint -InstallerFileName $InstallerFileName
+            if ($scope -eq 'currentuser') {
+                & $add '/S /currentuser'
+                & $add '/S /allusers'
+            } elseif ($scope -eq 'allusers') {
+                & $add '/S /allusers'
+                & $add '/S /currentuser'
+            } else {
+                & $add '/S /currentuser'
+                & $add '/S /allusers'
+            }
+            & $add '/S'
+            & $add '/S /NCRC'
+            if ($WingetSilentSwitch) { & $add $WingetSilentSwitch }
+        }
+        'inno' {
+            & $add (Get-WingetterDefaultSilentArguments -Engine 'inno')
+            & $add '/VERYSILENT /NORESTART /SUPPRESSMSGBOXES /SP- /LANG=english'
+            & $add '/VERYSILENT /NORESTART /LANG=english'
+            if ($WingetSilentSwitch) { & $add $WingetSilentSwitch }
+        }
+        'msi' {
+            & $add '/quiet /norestart'
+            & $add '/qn /norestart'
+            & $add '/qb /norestart'
+        }
+        { $_ -in @('burn', 'wix') } {
+            & $add '/quiet /norestart'
+            & $add '/silent /norestart'
+            & $add '/qn'
+        }
+        'installshield' {
+            & $add '/s /v"/qn /norestart"'
+            & $add '/s /v/qn'
+            & $add '/silent'
+        }
+        'advancedinstaller' {
+            & $add '/qn'
+            & $add '/quiet'
+        }
+        'msix' {
+            & $add ''
+        }
+        default {
+            & $add '/S'
+            & $add '/S /currentuser'
+            & $add '/S /allusers'
+            & $add '/quiet'
+            & $add '/silent'
+            & $add '/VERYSILENT /LANG=english'
+            if ($WingetSilentSwitch) { & $add $WingetSilentSwitch }
+        }
+    }
+
+    return @($candidates)
 }
 
 function Test-WingetterSilentSwitchAdequacy {
@@ -390,7 +527,7 @@ function Get-WingetterSilentInstallPlan {
     $resolved = Resolve-WingetterInstallerEngine -InstallerPath $InstallerPath -InstallerExtension $extension -InstallerType $InstallerType
     $engine = $resolved.Engine
     $warnings = New-Object System.Collections.Generic.List[string]
-    $defaultArguments = Get-WingetterDefaultSilentArguments -Engine $engine
+    $defaultArguments = Get-WingetterDefaultSilentArguments -Engine $engine -InstallerFileName $fileName
     $wingetSwitch = if ($null -eq $SilentSwitch) { '' } else { $SilentSwitch.Trim() }
 
     $arguments = $defaultArguments
@@ -411,6 +548,14 @@ function Get-WingetterSilentInstallPlan {
             }
             if ($engine -eq 'msi' -and -not (Test-WingetterSwitchHasToken -SwitchText $arguments -Token '/norestart')) {
                 $arguments = ($arguments.Trim() + ' /norestart').Trim()
+            }
+            if ($engine -eq 'nsis' -and -not (Test-WingetterSwitchHasNsisScope -SwitchText $arguments)) {
+                $scope = Get-WingetterNsisScopeHint -InstallerFileName $fileName
+                if ($scope) {
+                    $arguments = ($arguments.Trim() + " /$scope").Trim()
+                    $argumentSource = 'winget-silent-plus-scope'
+                    $warnings.Add("Added /$scope. NsisMultiUser installers (RStudio, DBeaver, ...) reject bare /S with exit 666660 unless /currentuser or /allusers is set.") | Out-Null
+                }
             }
         } elseif (
             $engine -eq 'inno' -and
@@ -586,5 +731,163 @@ function Get-WingetterPackageSilentInstallInfo {
         InstallerPath    = if ($installer) { $installer.FullName } else { $null }
         Mismatch         = $mismatch
         MismatchReason   = $mismatchReason
+    }
+}
+
+function Split-WingetterInstallCommand {
+    param([string]$Command)
+
+    $text = if ($null -eq $Command) { '' } else { $Command.Trim() }
+    if ([string]::IsNullOrWhiteSpace($text)) {
+        return [PSCustomObject]@{ FileName = ''; Arguments = ''; EngineHint = '' }
+    }
+
+    if ($text -match '(?i)^msiexec\b') {
+        $args = ($text -replace '(?i)^msiexec\s+/i\s+"[^"]+"\s*', '').Trim()
+        $file = ''
+        if ($text -match '(?i)^msiexec\s+/i\s+"([^"]+)"') {
+            $file = $matches[1]
+        }
+        return [PSCustomObject]@{ FileName = $file; Arguments = $args; EngineHint = 'msi' }
+    }
+
+    if ($text -match '(?i)^Add-AppxPackage\b') {
+        $file = ''
+        if ($text -match '-Path\s+"([^"]+)"') {
+            $file = $matches[1]
+        }
+        return [PSCustomObject]@{ FileName = $file; Arguments = ''; EngineHint = 'msix' }
+    }
+
+    if ($text -match '^"([^"]+)"\s*(.*)$') {
+        return [PSCustomObject]@{
+            FileName   = $matches[1].Trim()
+            Arguments  = $matches[2].Trim()
+            EngineHint = ''
+        }
+    }
+
+    $parts = ConvertTo-WingetterSwitchTokenList -Value $text
+    if ($parts.Count -eq 0) {
+        return [PSCustomObject]@{ FileName = ''; Arguments = ''; EngineHint = '' }
+    }
+
+    return [PSCustomObject]@{
+        FileName   = $parts[0]
+        Arguments  = (($parts | Select-Object -Skip 1) -join ' ').Trim()
+        EngineHint = ''
+    }
+}
+
+function Update-WingetterPackagedSilentInstall {
+    <#
+    .SYNOPSIS
+        Permanently rewrites install.ps1 / silent-switches.json / app.json after a sandbox switch succeeds.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$VersionDirectory,
+        [Parameter(Mandatory = $true)]
+        [string]$Arguments,
+        [string]$Engine,
+        [string]$ArgumentSource = 'sandbox-retry',
+        [string]$PackageId,
+        [string]$DisplayName,
+        [string]$Version
+    )
+
+    if (-not (Test-Path -LiteralPath $VersionDirectory)) {
+        throw "Package folder not found: $VersionDirectory"
+    }
+
+    $info = Get-WingetterPackageSilentInstallInfo -VersionDirectory $VersionDirectory
+    $installerFileName = $null
+    if ($info.InstallerPath) {
+        $installerFileName = [System.IO.Path]::GetFileName($info.InstallerPath)
+    } elseif ($info.Manifest -and $info.Manifest.installerFile) {
+        $installerFileName = [string]$info.Manifest.installerFile
+    } elseif ($info.PackagedCommand) {
+        $installerFileName = (Split-WingetterInstallCommand -Command $info.PackagedCommand).FileName
+    }
+
+    if ([string]::IsNullOrWhiteSpace($installerFileName)) {
+        throw 'Could not determine installer file name for silent-switch update.'
+    }
+
+    $resolvedEngine = $Engine
+    if ([string]::IsNullOrWhiteSpace($resolvedEngine)) {
+        if ($info.Recommended) {
+            $resolvedEngine = [string]$info.Recommended.Engine
+        } elseif ($info.Manifest) {
+            $resolvedEngine = [string]$info.Manifest.engine
+        } else {
+            $resolvedEngine = 'exe'
+        }
+    }
+
+    $command = Get-WingetterSilentInstallCommandText `
+        -InstallerFileName $installerFileName `
+        -Engine $resolvedEngine `
+        -Arguments $Arguments
+
+    $appJsonPath = Join-Path $VersionDirectory 'app.json'
+    $app = $null
+    if (Test-Path -LiteralPath $appJsonPath) {
+        try {
+            $app = Get-Content -LiteralPath $appJsonPath -Raw | ConvertFrom-Json
+        } catch {
+            $app = $null
+        }
+    }
+
+    $resolvedPackageId = if ($PackageId) { $PackageId } elseif ($app -and $app.packageIdentifier) { [string]$app.packageIdentifier } else { 'Unknown.Package' }
+    $resolvedDisplayName = if ($DisplayName) { $DisplayName } elseif ($app -and $app.displayName) { [string]$app.displayName } else { $resolvedPackageId }
+    $resolvedVersion = if ($Version) { $Version } elseif ($app -and $app.version) { [string]$app.version } else { 'Unknown' }
+
+    $installScript = New-WingetterInstallScript `
+        -PackageId $resolvedPackageId `
+        -DisplayName $resolvedDisplayName `
+        -Version $resolvedVersion `
+        -InstallCommand $command
+    $installScriptPath = Join-Path $VersionDirectory 'install.ps1'
+    $installScript | Set-Content -LiteralPath $installScriptPath -Encoding UTF8
+
+    $plan = [PSCustomObject]@{
+        Engine              = $resolvedEngine
+        EngineSource        = if ($info.Recommended) { $info.Recommended.EngineSource } elseif ($info.Manifest) { [string]$info.Manifest.engineSource } else { 'sandbox-retry' }
+        ProbeSignature      = if ($info.Recommended) { $info.Recommended.ProbeSignature } elseif ($info.Manifest) { [string]$info.Manifest.probeSignature } else { $null }
+        InstallerFileName   = $installerFileName
+        WingetInstallerType = if ($info.Manifest) { [string]$info.Manifest.wingetInstallerType } else { '' }
+        WingetSilentSwitch  = if ($info.Manifest) { [string]$info.Manifest.wingetSilentSwitch } else { '' }
+        Arguments           = $Arguments
+        ArgumentSource      = $ArgumentSource
+        Command             = $command
+        Verified            = $true
+        Overridden          = $true
+        OverrideReason      = 'Selected by sandbox silent-switch retry.'
+        Warnings            = @('Silent switch was discovered and saved during Test in Sandbox.')
+        AdequacyReason      = 'Sandbox install succeeded with this switch (exit 0/3010/1641, no installer UI).'
+        GeneratedAt         = (Get-Date).ToUniversalTime().ToString('o')
+    }
+
+    $manifestPath = Write-WingetterSilentSwitchManifest -Path (Join-Path $VersionDirectory 'silent-switches.json') -Plan $plan
+
+    if ($app) {
+        $app | Add-Member -NotePropertyName silentInstallCommand -NotePropertyValue $command -Force
+        $app | Add-Member -NotePropertyName silentInstallVerified -NotePropertyValue $true -Force
+        $app | Add-Member -NotePropertyName installerEngine -NotePropertyValue $resolvedEngine -Force
+        $app | Add-Member -NotePropertyName silentInstallArgumentSource -NotePropertyValue $ArgumentSource -Force
+        ($app | ConvertTo-Json -Depth 10) | Set-Content -LiteralPath $appJsonPath -Encoding UTF8
+    }
+
+    return [PSCustomObject]@{
+        VersionDirectory = $VersionDirectory
+        InstallScriptPath = $installScriptPath
+        ManifestPath = $manifestPath
+        Command = $command
+        Arguments = $Arguments
+        Engine = $resolvedEngine
+        ArgumentSource = $ArgumentSource
     }
 }

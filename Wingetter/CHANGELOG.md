@@ -1,5 +1,16 @@
 # Wingetter Changelog
 
+## Version 2.5.0 - 2026-08-27
+
+### Sandbox silent-switch retry
+- **Test in Sandbox** automatically retries alternate silent install switches when install fails (non-zero exit or installer UI)
+- The first switch that succeeds (exit 0/3010/1641, no UI) is written permanently to `install.ps1`, `silent-switches.json`, and `app.json`
+- Guest coordinator accepts `installOverride` + `attempt` on `command.json` (keyed by `issuedAt`) so retries stay inside the same sandbox session
+
+### NsisMultiUser / RStudio fix
+- Exit code **666660** means invalid NSIS MultiUser parameters: bare `/S` is rejected unless `/currentuser` or `/allusers` is set
+- Packaging now defaults `*_User_*` Nullsoft installers (for example RStudio) to `/S /currentuser` and `*_Machine_*` to `/S /allusers`
+
 ## Version 2.4.2 - 2026-08-27
 
 ### Packaging / RStudio versions

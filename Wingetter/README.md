@@ -241,6 +241,10 @@ Startup details are always written to `%TEMP%\Wingetter-launch.log`.
 - Review the log panel in the GUI
 - If the dialog shows `exit code: -1978335209 -- No manifest found matching the criteria` for apps like RStudio, you hit a truncated SemVer build version (`2025.05.1` instead of `2025.05.1+513`). Version **2.4.2+** keeps the `+N` suffix from search and retries `winget show` without `--version` when needed.
 
+### Sandbox install exit 666660 (RStudio / NsisMultiUser)
+
+Exit **666660** means the Nullsoft MultiUser installer rejected the command line. Bare `/S` is invalid; the installer needs `/S /currentuser` or `/S /allusers`. Version **2.5.0+** packages `*_User_*` installers with `/currentuser`, and **Test in Sandbox** auto-retries alternate silent switches, then permanently updates `install.ps1` when one succeeds.
+
 ### Detection not working after deployment
 
 - Test locally: `powershell -ExecutionPolicy Bypass -File detection.ps1`
@@ -254,10 +258,11 @@ Windows Sandbox (Windows 10/11 Pro, Enterprise, or Education) can install, detec
 1. Create a package so the version folder contains `install.ps1`, `detection.ps1`, `uninstall.ps1`, and the installer.
 2. Click **Test in Sandbox**.
 3. If Windows Sandbox is not enabled, Wingetter prompts to enable the `Containers-DisposableClientVM` optional feature (administrator approval; usually a reboot).
-4. Windows Sandbox starts and runs `install.ps1`. Confirm the step in Wingetter.
-5. Confirm **detection**, then confirm **uninstall**.
-6. If all three steps are confirmed **and the install stayed silent** (no language/wizard dialog), Wingetter writes `validation.json` and sets `sandboxValidated` on `app.json`.
-7. After the test (pass or fail), Wingetter writes `sandbox-test-report.txt` in the package folder and copies Intune/guest logs to `sandbox-logs\`. On failure it also writes `sandbox-failure.log` in that same folder — upload that file for diagnostics. Use **Copy report** in the dialog to grab a log before the sandbox closes.
+4. Windows Sandbox starts and runs `install.ps1`. If install fails, Wingetter automatically retries alternate silent switches (for example `/S /currentuser` for RStudio). The first switch that succeeds is written permanently to `install.ps1`.
+5. Confirm the successful install step in Wingetter.
+6. Confirm **detection**, then confirm **uninstall**.
+7. If all three steps are confirmed **and the install stayed silent** (no language/wizard dialog), Wingetter writes `validation.json` and sets `sandboxValidated` on `app.json`.
+8. After the test (pass or fail), Wingetter writes `sandbox-test-report.txt` in the package folder and copies Intune/guest logs to `sandbox-logs\`. On failure it also writes `sandbox-failure.log` in that same folder — upload that file for diagnostics. Use **Copy report** in the dialog to grab a log before the sandbox closes. If you already built an `.intunewin` before a sandbox switch fix, re-run Content Prep so the archive includes the updated `install.ps1`.
 
 ## License
 
