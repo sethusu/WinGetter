@@ -267,78 +267,128 @@ function Get-WingetterSilentSwitchCandidates {
         [string]$WingetSilentSwitch
     )
 
-    $candidates = New-Object System.Collections.Generic.List[string]
+    return @(Get-WingetterSilentSwitchCandidateInfo `
+            -Engine $Engine `
+            -InstallerFileName $InstallerFileName `
+            -CurrentArguments $CurrentArguments `
+            -WingetSilentSwitch $WingetSilentSwitch |
+            ForEach-Object { $_.Arguments })
+}
+
+function Get-WingetterSilentSwitchCandidateInfo {
+    <#
+    .SYNOPSIS
+        Returns labeled silent-switch candidates for an installer engine (for Try again UI).
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Engine,
+        [string]$InstallerFileName,
+        [string]$CurrentArguments,
+        [string]$WingetSilentSwitch
+    )
+
+    $items = New-Object System.Collections.Generic.List[object]
 
     $add = {
-        param([string]$Value)
-        $trimmed = if ($null -eq $Value) { '' } else { $Value.Trim() }
-        foreach ($existing in $candidates) {
-            if ([string]::Equals($existing, $trimmed, [StringComparison]::OrdinalIgnoreCase)) {
+        param(
+            [string]$Arguments,
+            [string]$Label,
+            [string]$Description
+        )
+        $trimmed = if ($null -eq $Arguments) { '' } else { $Arguments.Trim() }
+        foreach ($existing in $items) {
+            if ([string]::Equals([string]$existing.Arguments, $trimmed, [StringComparison]::OrdinalIgnoreCase)) {
                 return
             }
         }
-        $candidates.Add($trimmed) | Out-Null
+        $items.Add([PSCustomObject]@{
+                Arguments   = $trimmed
+                Label       = $Label
+                Description = $Description
+                Engine      = $Engine
+                Display     = if ([string]::IsNullOrWhiteSpace($trimmed)) {
+                    "$Label (no switches)"
+                } else {
+                    "$Label - $trimmed"
+                }
+            }) | Out-Null
     }
 
-    & $add $CurrentArguments
+    if ($null -ne $CurrentArguments) {
+        & $add $CurrentArguments 'Packaged / last tried' 'The switch currently in install.ps1 (or the last sandbox attempt).'
+    }
 
     switch ($Engine) {
         'nsis' {
             $scope = Get-WingetterNsisScopeHint -InstallerFileName $InstallerFileName
             if ($scope -eq 'currentuser') {
-                & $add '/S /currentuser'
-                & $add '/S /allusers'
+                & $add '/S /currentuser' 'NSIS MultiUser (per-user)' 'Required by RStudio/DBeaver-style NsisMultiUser User installers. Bare /S returns 666660.'
+                & $add '/S /allusers' 'NSIS MultiUser (all users)' 'Machine-wide; needs elevation in sandbox/Intune system context.'
             } elseif ($scope -eq 'allusers') {
-                & $add '/S /allusers'
-                & $add '/S /currentuser'
+                & $add '/S /allusers' 'NSIS MultiUser (all users)' 'Machine-wide silent install for Machine_* Nullsoft packages.'
+                & $add '/S /currentuser' 'NSIS MultiUser (per-user)' 'Per-user fallback if all-users elevation fails.'
             } else {
-                & $add '/S /currentuser'
-                & $add '/S /allusers'
+                & $add '/S /currentuser' 'NSIS MultiUser (per-user)' 'Try this if bare /S returns 666660 (invalid parameters).'
+                & $add '/S /allusers' 'NSIS MultiUser (all users)' 'Machine-wide; needs elevation.'
             }
-            & $add '/S'
-            & $add '/S /NCRC'
-            if ($WingetSilentSwitch) { & $add $WingetSilentSwitch }
+            & $add '/S' 'NSIS classic silent' 'Standard Nullsoft /S (not enough for MultiUser installers).'
+            & $add '/S /NCRC' 'NSIS silent + skip CRC' 'Skips CRC check; sometimes used by older NSIS packages.'
+            if ($WingetSilentSwitch) {
+                & $add $WingetSilentSwitch 'Winget Silent metadata' 'Value from winget show Silent:.'
+            }
         }
         'inno' {
-            & $add (Get-WingetterDefaultSilentArguments -Engine 'inno')
-            & $add '/VERYSILENT /NORESTART /SUPPRESSMSGBOXES /SP- /LANG=english'
-            & $add '/VERYSILENT /NORESTART /LANG=english'
-            if ($WingetSilentSwitch) { & $add $WingetSilentSwitch }
+            & $add '/VERYSILENT /NORESTART /SUPPRESSMSGBOXES /SP- /LANG=english' 'Inno fully silent + language' 'Recommended Intune/sandbox switch set (avoids language dialog).'
+            & $add '/VERYSILENT /NORESTART /LANG=english' 'Inno very silent + language' 'Minimal set that stays silent when ShowLanguageDialog=yes.'
+            & $add '/VERYSILENT /NORESTART /SUPPRESSMSGBOXES /SP-' 'Inno very silent (no LANG)' 'May still show Select Setup Language.'
+            & $add '/SILENT /NORESTART /LANG=english' 'Inno silent (shows progress)' 'Not fully silent; progress wizard may appear.'
+            if ($WingetSilentSwitch) {
+                & $add $WingetSilentSwitch 'Winget Silent metadata' 'Value from winget show Silent:.'
+            }
         }
         'msi' {
-            & $add '/quiet /norestart'
-            & $add '/qn /norestart'
-            & $add '/qb /norestart'
+            & $add '/quiet /norestart' 'MSI quiet' 'Standard msiexec quiet install.'
+            & $add '/qn /norestart' 'MSI /qn' 'No UI msiexec level.'
+            & $add '/qb /norestart' 'MSI basic UI' 'Basic progress UI only.'
+            & $add '/qr /norestart' 'MSI reduced UI' 'Reduced UI msiexec level.'
         }
         { $_ -in @('burn', 'wix') } {
-            & $add '/quiet /norestart'
-            & $add '/silent /norestart'
-            & $add '/qn'
+            & $add '/quiet /norestart' 'WiX Burn quiet' 'Standard Burn silent switch.'
+            & $add '/silent /norestart' 'WiX Burn silent' 'Alternate Burn silent switch.'
+            & $add '/qn' 'WiX /qn' 'MSI-style quiet passed through Burn.'
+            & $add '/passive' 'WiX passive' 'Progress only; not fully silent.'
         }
         'installshield' {
-            & $add '/s /v"/qn /norestart"'
-            & $add '/s /v/qn'
-            & $add '/silent'
+            & $add '/s /v"/qn /norestart"' 'InstallShield silent + MSI quiet' 'Common InstallShield + embedded MSI pattern.'
+            & $add '/s /v/qn' 'InstallShield /s /v/qn' 'Shorter InstallShield silent form.'
+            & $add '/silent' 'InstallShield /silent' 'Generic InstallShield silent.'
+            & $add '/s' 'InstallShield /s' 'Basic InstallShield silent.'
         }
         'advancedinstaller' {
-            & $add '/qn'
-            & $add '/quiet'
+            & $add '/qn' 'Advanced Installer /qn' 'Fully quiet.'
+            & $add '/quiet' 'Advanced Installer /quiet' 'Alternate quiet switch.'
+            & $add '/passive' 'Advanced Installer /passive' 'Progress only.'
         }
         'msix' {
-            & $add ''
+            & $add '' 'Add-AppxPackage' 'MSIX/AppX uses Add-AppxPackage; no silent EXE switches.'
         }
         default {
-            & $add '/S'
-            & $add '/S /currentuser'
-            & $add '/S /allusers'
-            & $add '/quiet'
-            & $add '/silent'
-            & $add '/VERYSILENT /LANG=english'
-            if ($WingetSilentSwitch) { & $add $WingetSilentSwitch }
+            & $add '/S' 'Generic /S' 'Common NSIS-style silent guess.'
+            & $add '/S /currentuser' 'Generic /S /currentuser' 'NsisMultiUser per-user guess.'
+            & $add '/S /allusers' 'Generic /S /allusers' 'NsisMultiUser all-users guess.'
+            & $add '/quiet' 'Generic /quiet' 'MSI/Burn-style quiet guess.'
+            & $add '/silent' 'Generic /silent' 'Generic silent guess.'
+            & $add '/VERYSILENT /LANG=english' 'Generic Inno very silent' 'Inno-style guess for unknown EXE.'
+            & $add '/qn' 'Generic /qn' 'MSI quiet level guess.'
+            if ($WingetSilentSwitch) {
+                & $add $WingetSilentSwitch 'Winget Silent metadata' 'Value from winget show Silent:.'
+            }
         }
     }
 
-    return @($candidates)
+    # ToArray avoids @($genericList) binder failures on some PowerShell hosts.
+    return @($items.ToArray())
 }
 
 function Test-WingetterSilentSwitchAdequacy {

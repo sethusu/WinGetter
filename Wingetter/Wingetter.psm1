@@ -48,6 +48,7 @@ Export-ModuleMember -Function @(
     'Get-WingetterSandboxTestReportPath'
     'Get-WingetterSilentInstallPlan'
     'Get-WingetterSilentSwitchCandidates'
+    'Get-WingetterSilentSwitchCandidateInfo'
     'Get-WingetterSilentInstallCommandText'
     'Get-WingetterPackageSilentInstallInfo'
     'Update-WingetterPackagedSilentInstall'
