@@ -59,7 +59,7 @@ Or launch via the main script with no parameters:
    Search queries **every configured Winget repository** (`winget`, `msstore`, and any custom sources).
 2. A **search dialog** opens with **radio buttons** — each result shows version and source; select the app you want to package and click **Select**.
 3. Choose an **output destination** (defaults to `Documents\Wingetter\{PackageId}` after you select an app).
-4. Optionally set a specific **version** or **custom icon**.
+4. Optionally set a specific **version**, **licensing info**, or **custom icon**.
 5. Click **Create Package** and watch the **live progress tracker** and step list.
 6. Preview the resolved **icon** in the right panel.
 7. When packaging finishes, pick the best icon from the **icon picker** if multiple candidates were found.
@@ -71,6 +71,7 @@ Or launch via the main script with no parameters:
 .\Create-IntuneWinFromWinget.ps1 -AppName "Google.Chrome"
 .\Create-IntuneWinFromWinget.ps1 -AppName "7zip.7zip" -Version "23.01"
 .\Create-IntuneWinFromWinget.ps1 -AppName "MaximaTeam.Maxima" -OutputPath "C:\IntunePackages"
+.\Create-IntuneWinFromWinget.ps1 -AppName "VCVRack.VCVRack" -LicensingInfo "DG4P47-NIWEFM-VT98ZG-8FMEQ9-M2H2JQ-59PQTP-EDSH2F-9YH5AQ-JPP2CM-TYWTPS"
 .\Create-IntuneWinFromWinget.ps1 -UseGui
 ```
 
@@ -82,6 +83,7 @@ Or launch via the main script with no parameters:
 | `Version` | Optional specific version to download. |
 | `OutputPath` | Base output directory. Defaults to `Documents\Wingetter`; each package is written to `{OutputPath}\{PackageId}\`. |
 | `IconPath` | Optional custom PNG icon path. |
+| `LicensingInfo` | Optional licensing details captured during software intake; exported to `app.json`, `win32LobApp.json` notes, and package `README.md`. |
 | `UseGui` | Force the graphical interface. |
 
 ## Output Structure
@@ -137,6 +139,7 @@ Each package includes a Markdown README with a complete **Intune Portal Upload R
 
 - Display name, description, publisher, developer
 - App version, Winget package ID, information URL
+- Licensing details (when provided)
 - Install and uninstall command lines
 - Setup file name, IntuneWin file name, SHA-256 hash
 - Detection method, architecture, minimum Windows release

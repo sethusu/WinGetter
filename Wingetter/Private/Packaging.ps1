@@ -7,6 +7,7 @@ function Invoke-WingetterPackaging {
         [string]$Source,
         [string]$OutputPath = (Get-WingetterSettings).OutputPath,
         [string]$IconPath,
+        [string]$LicensingInfo,
         [switch]$CollectIconCandidates,
         [scriptblock]$OnProgress
     )
@@ -114,7 +115,7 @@ function Invoke-WingetterPackaging {
             -InstallerFileName $installerFile.Name -InstallerHash $installerHash `
             -InstallerInstallCommand $installerInstallCommand -DetectionScript $detectionScript `
             -InstallScript $installScript -UninstallScript $uninstallScript -IconFilePath $iconFilePath `
-            -SilentInstallPlan $silentPlan
+            -SilentInstallPlan $silentPlan -LicensingInfo $LicensingInfo
 
         Write-WingetterProgress -Step 10 -TotalSteps $totalSteps -StepName 'Packaging .intunewin' -Percent 88 -OnProgress $OnProgress
         $contentPrepPath = Resolve-ContentPrepToolPath
@@ -157,6 +158,7 @@ function Invoke-WingetterPackaging {
             DisplayName = $details.DisplayName
             Version = $details.Version
             Publisher = $details.Publisher
+            LicensingInfo = $LicensingInfo
             VersionDirectory = $versionDirectory
             IntuneWinFile = if ($packagingSucceeded) { $intunewinFile } else { $null }
             IconFile = if (Test-Path $iconFilePath) { $iconFilePath } else { $null }
