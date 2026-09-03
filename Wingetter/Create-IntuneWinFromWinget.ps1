@@ -12,6 +12,8 @@
     Optional. Base output path. Defaults to the saved Wingetter settings path.
 .PARAMETER IconPath
     Optional. Path to a custom PNG icon.
+.PARAMETER LicensingInfo
+    Optional. Licensing details from ServiceNow intake (for downstream AppGetter logic).
 .PARAMETER UseGui
     Launch the graphical interface instead of running in CLI mode.
 .EXAMPLE
@@ -35,6 +37,9 @@ param(
 
     [Parameter(Mandatory = $false)]
     [string]$IconPath,
+
+    [Parameter(Mandatory = $false)]
+    [string]$LicensingInfo,
 
     [Parameter(Mandatory = $false)]
     [switch]$UseGui
@@ -125,7 +130,8 @@ try {
     }
 
     $result = Invoke-WingetterPackaging -PackageId $selectedPackage.Id -Version $packageVersion `
-        -Source $selectedPackage.Source -OutputPath $OutputPath -IconPath $IconPath -OnProgress $onProgress
+        -Source $selectedPackage.Source -OutputPath $OutputPath -IconPath $IconPath `
+        -LicensingInfo $LicensingInfo -OnProgress $onProgress
 
     if ($result.PackagingSucceeded) {
         Write-Host "`nPackage created successfully!" -ForegroundColor Green
@@ -141,6 +147,7 @@ Package Details:
 - Package ID: $($result.PackageId)
 - Version: $($result.Version)
 - Publisher: $($result.Publisher)
+- Licensing details: $(if ($result.LicensingInfo) { $result.LicensingInfo } else { '(not provided)' })
 - Output Directory: $($result.VersionDirectory)
 - IntuneWin Package: $intuneWinLine
 

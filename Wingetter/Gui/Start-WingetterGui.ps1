@@ -1373,7 +1373,7 @@ function Start-WingetterBackgroundPackaging {
     $powershell.Runspace = $runspace
 
     $null = $powershell.AddScript({
-        param($ModulePath, $PackageId, $Version, $Source, $OutputPath, $IconPath, $CollectIconCandidates, $Queue)
+        param($ModulePath, $PackageId, $Version, $Source, $OutputPath, $IconPath, $LicensingInfo, $CollectIconCandidates, $Queue)
         Import-Module $ModulePath -Force
         $onProgress = {
             param($Event)
@@ -1387,6 +1387,7 @@ function Start-WingetterBackgroundPackaging {
         if ($Version) { $params.Version = $Version }
         if ($Source) { $params.Source = $Source }
         if ($IconPath) { $params.IconPath = $IconPath }
+        if ($LicensingInfo) { $params.LicensingInfo = $LicensingInfo }
         if ($CollectIconCandidates) { $params.CollectIconCandidates = $true }
         Invoke-WingetterPackaging @params
     }).AddArgument($modulePath).
@@ -1395,6 +1396,7 @@ function Start-WingetterBackgroundPackaging {
       AddArgument($PackArguments.Source).
       AddArgument($PackArguments.OutputPath).
       AddArgument($PackArguments.IconPath).
+      AddArgument($PackArguments.LicensingInfo).
       AddArgument([bool]$PackArguments.CollectIconCandidates).
       AddArgument($ProgressQueue)
 
@@ -1432,6 +1434,7 @@ $selectedAppText = $window.FindName('SelectedAppText')
 $outputPathBox = $window.FindName('OutputPathBox')
 $browseOutputButton = $window.FindName('BrowseOutputButton')
 $versionBox = $window.FindName('VersionBox')
+$licensingInfoBox = $window.FindName('LicensingInfoBox')
 $progressBar = $window.FindName('ProgressBar')
 $progressStatus = $window.FindName('ProgressStatusText')
 $stepList = $window.FindName('StepList')
@@ -2012,6 +2015,7 @@ function Start-WingetterPackagingFromUi {
         Source = $script:selectedPackage.Source
         OutputPath = $appOutputPath
         IconPath = $script:customIconPath
+        LicensingInfo = $licensingInfoBox.Text.Trim()
         CollectIconCandidates = $true
     }
 
