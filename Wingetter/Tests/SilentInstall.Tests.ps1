@@ -61,6 +61,16 @@ Describe 'Test-WingetterSilentSwitchAdequacy' {
             (Test-WingetterSilentSwitchAdequacy -Engine 'burn' -SwitchText '/S').Adequate | Should -Be $false
         }
     }
+
+    It 'Accepts dash-style --quiet for unknown EXE (Autodesk Fusion)' {
+        InModuleScope Wingetter {
+            (Test-WingetterSilentSwitchAdequacy -Engine 'exe' -SwitchText '--globalinstall --quiet').Adequate | Should -Be $true
+            (Test-WingetterSilentSwitchAdequacy -Engine 'exe' -SwitchText '--quiet').Adequate | Should -Be $true
+            (Test-WingetterSilentSwitchAdequacy -Engine 'exe' -SwitchText '--silent').Adequate | Should -Be $true
+            # /quiet must not falsely match --quiet (exact token compare)
+            (Test-WingetterSilentSwitchAdequacy -Engine 'exe' -SwitchText '--globalinstall').Adequate | Should -Be $false
+        }
+    }
 }
 
 Describe 'Get-WingetterSilentInstallPlan' {
@@ -131,6 +141,33 @@ Describe 'Get-WingetterSilentInstallPlan' {
             -InstallerExtension '.exe' `
             -InstallerType 'nullsoft'
         $plan.Arguments | Should -Be '/S /allusers'
+    }
+
+    It 'Keeps Autodesk Fusion Winget Silent --globalinstall --quiet for unknown EXE' {
+        $plan = Get-WingetterSilentInstallPlan `
+            -InstallerFileName 'Autodesk Fusion_2705.1.25_X64_exe_en-US.exe' `
+            -InstallerExtension '.exe' `
+            -InstallerType 'exe' `
+            -SilentSwitch '--globalinstall --quiet'
+        $plan.Engine | Should -Be 'exe'
+        $plan.Overridden | Should -Be $false
+        $plan.ArgumentSource | Should -Be 'winget-silent'
+        $plan.Arguments | Should -Be '--globalinstall --quiet'
+        $plan.Command | Should -Be '"Autodesk Fusion_2705.1.25_X64_exe_en-US.exe" --globalinstall --quiet'
+        # Unknown EXE still requires sandbox confirmation
+        $plan.Verified | Should -Be $false
+        ($plan.Warnings -join ' ') | Should -Match 'Keeping Winget Silent'
+        ($plan.Warnings -join ' ') | Should -Not -Match 'generic /S'
+    }
+
+    It 'Does not replace --quiet with /S when Winget Silent uses dash-style quiet' {
+        $plan = Get-WingetterSilentInstallPlan `
+            -InstallerFileName 'Fusion Client Downloader.exe' `
+            -InstallerExtension '.exe' `
+            -InstallerType 'exe' `
+            -SilentSwitch '--quiet'
+        $plan.Command | Should -Be '"Fusion Client Downloader.exe" --quiet'
+        $plan.Command | Should -Not -Match '(?i)(?:^|\s)/S(?:\s|$)'
     }
 
     It 'Probes installer bytes for Inno Setup' {
@@ -230,6 +267,19 @@ Describe 'Get-WingetterSilentSwitchCandidateInfo' {
             -CurrentArguments '/S /currentuser'
         @($info | Where-Object { $_.Arguments -eq '/S /currentuser' }).Count | Should -Be 1
         $info[0].Arguments | Should -Be '/S /currentuser'
+    }
+
+    It 'Lists Winget Silent and Autodesk-style dash quiet before generic /S for unknown EXE' {
+        $info = Get-WingetterSilentSwitchCandidateInfo `
+            -Engine 'exe' `
+            -InstallerFileName 'Autodesk Fusion_2705.1.25_X64_exe_en-US.exe' `
+            -CurrentArguments '--globalinstall /S' `
+            -WingetSilentSwitch '--globalinstall --quiet'
+        $args = @($info | ForEach-Object { $_.Arguments })
+        $args | Should -Contain '--globalinstall --quiet'
+        $args | Should -Contain '--quiet'
+        $args | Should -Contain '--globalinstall --quiet'
+        ([array]::IndexOf([string[]]$args, '--globalinstall --quiet')) | Should -BeLessThan ([array]::IndexOf([string[]]$args, '/S'))
     }
 }
 

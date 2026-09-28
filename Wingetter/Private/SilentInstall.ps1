@@ -29,6 +29,23 @@ function Test-WingetterSwitchHasToken {
     return $false
 }
 
+function Test-WingetterSwitchLooksSilentForUnknownExe {
+    param([string]$SwitchText)
+
+    # Slash-style (NSIS/MSI/Inno) and dash-style (Autodesk Fusion, many custom EXEs).
+    # Exact token match: /quiet does not equal --quiet.
+    $silentTokens = @(
+        '/S', '/s', '/quiet', '/silent', '/VERYSILENT', '/qn',
+        '--quiet', '--silent', '-q', '-s'
+    )
+    foreach ($token in $silentTokens) {
+        if (Test-WingetterSwitchHasToken -SwitchText $SwitchText -Token $token) {
+            return $true
+        }
+    }
+    return $false
+}
+
 function Test-WingetterSwitchHasLang {
     param([string]$SwitchText)
 
@@ -374,6 +391,13 @@ function Get-WingetterSilentSwitchCandidateInfo {
             & $add '' 'Add-AppxPackage' 'MSIX/AppX uses Add-AppxPackage; no silent EXE switches.'
         }
         default {
+            # Prefer Winget Silent first for unknown EXEs (Autodesk Fusion uses --globalinstall --quiet).
+            if ($WingetSilentSwitch) {
+                & $add $WingetSilentSwitch 'Winget Silent metadata' 'Value from winget show Silent: (preferred for unknown EXE).'
+            }
+            & $add '--quiet' 'Dash --quiet' 'Common custom-EXE silent (Autodesk-style).'
+            & $add '--globalinstall --quiet' 'Autodesk-style machine quiet' 'Machine-wide silent used by Autodesk Fusion Client Downloader.'
+            & $add '--silent' 'Dash --silent' 'Alternate custom-EXE silent.'
             & $add '/S' 'Generic /S' 'Common NSIS-style silent guess.'
             & $add '/S /currentuser' 'Generic /S /currentuser' 'NsisMultiUser per-user guess.'
             & $add '/S /allusers' 'Generic /S /allusers' 'NsisMultiUser all-users guess.'
@@ -381,9 +405,6 @@ function Get-WingetterSilentSwitchCandidateInfo {
             & $add '/silent' 'Generic /silent' 'Generic silent guess.'
             & $add '/VERYSILENT /LANG=english' 'Generic Inno very silent' 'Inno-style guess for unknown EXE.'
             & $add '/qn' 'Generic /qn' 'MSI quiet level guess.'
-            if ($WingetSilentSwitch) {
-                & $add $WingetSilentSwitch 'Winget Silent metadata' 'Value from winget show Silent:.'
-            }
         }
     }
 
@@ -507,11 +528,7 @@ function Test-WingetterSilentSwitchAdequacy {
                     Reason   = 'No silent switch was provided for an unknown EXE installer.'
                 }
             }
-            if ((Test-WingetterSwitchHasToken -SwitchText $text -Token '/S') -or
-                (Test-WingetterSwitchHasToken -SwitchText $text -Token '/quiet') -or
-                (Test-WingetterSwitchHasToken -SwitchText $text -Token '/silent') -or
-                (Test-WingetterSwitchHasToken -SwitchText $text -Token '/VERYSILENT') -or
-                (Test-WingetterSwitchHasToken -SwitchText $text -Token '/qn')) {
+            if (Test-WingetterSwitchLooksSilentForUnknownExe -SwitchText $text) {
                 return [PSCustomObject]@{
                     Adequate = $true
                     Reason   = 'A common silent switch is present, but the installer engine was not identified.'
@@ -635,7 +652,13 @@ function Get-WingetterSilentInstallPlan {
     $finalCheck = Test-WingetterSilentSwitchAdequacy -Engine $engine -SwitchText $arguments
     $verified = [bool]$finalCheck.Adequate
     if ($engine -eq 'exe') {
-        $warnings.Add('Installer engine was not identified. Using a generic /S switch; re-test in Sandbox.') | Out-Null
+        # Unknown EXE: keep Verified=false so sandbox re-test is still required, but do not
+        # claim a generic /S was used when Winget Silent (e.g. --globalinstall --quiet) won.
+        if ($argumentSource -like 'winget-silent*') {
+            $warnings.Add("Installer engine was not identified. Keeping Winget Silent switch '$arguments'; re-test in Sandbox.") | Out-Null
+        } else {
+            $warnings.Add('Installer engine was not identified. Using a generic /S switch; re-test in Sandbox.') | Out-Null
+        }
         $verified = $false
     } elseif (-not $verified) {
         $warnings.Add($finalCheck.Reason) | Out-Null
