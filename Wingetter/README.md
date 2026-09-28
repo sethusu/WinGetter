@@ -246,6 +246,18 @@ Startup details are always written to `%TEMP%\Wingetter-launch.log`.
 
 Exit **666660** means the Nullsoft MultiUser installer rejected the command line. Bare `/S` is invalid; the installer needs `/S /currentuser` or `/S /allusers`. Version **2.5.0+** packages `*_User_*` installers with `/currentuser`. Version **2.5.2+** shows **Try again...** after a verified silent-install failure so you can pick a standard switch for the detected engine; the winner is saved to `install.ps1`.
 
+### Autodesk Fusion install finishes in seconds but is not confirmed
+
+Autodesk Fusion’s Winget Silent switch is `--globalinstall --quiet` (not `/S`). Version **2.5.3+** keeps that dash-style switch for unknown EXE engines. On older builds, Wingetter rejected `--quiet` (it only recognized `/quiet`) and fell back to `/S`, so `install.ps1` could exit 0 without actually installing Fusion.
+
+**Fix for an existing package:** edit `install.ps1` (or use **Try again...** in Sandbox) to:
+
+```text
+"Autodesk Fusion_<version>_X64_exe_en-US.exe" --globalinstall --quiet
+```
+
+Then re-run **Test in Sandbox**. Confirm install only after Fusion is actually present (a real Fusion client download/install takes minutes, not a few seconds). Note: Fusion may not write a classic Programs and Features uninstall key; if detection fails after a good install, adjust `detection.ps1` for a path/file check and re-package.
+
 ### Detection not working after deployment
 
 - Test locally: `powershell -ExecutionPolicy Bypass -File detection.ps1`

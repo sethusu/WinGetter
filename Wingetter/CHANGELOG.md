@@ -1,5 +1,12 @@
 # Wingetter Changelog
 
+## Version 2.5.3 - 2026-09-28
+
+### Autodesk Fusion / dash-style silent switches
+- Unknown EXE installers no longer reject Winget `Silent:` values that use `--quiet` or `--silent` (exact token match treated `/quiet` and `--quiet` as different)
+- Autodesk Fusion (`Autodesk.Fusion`) keeps `--globalinstall --quiet` from the Winget manifest instead of falling back to a generic `/S`
+- **Try again...** for unknown EXE lists Winget Silent and Autodesk-style dash switches before generic `/S`
+
 ## Version 2.5.2 - 2026-08-27
 
 ### Sandbox Try again silent switches
